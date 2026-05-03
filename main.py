@@ -32,8 +32,6 @@ current = {
     "volume": None
 }
 
-INTERVALS = ["M1","M5","M15","M30","H1","H4","D1","W1"]
-
 BAD_WORDS = {
     "o","l","h","c",
     "ma","ma20","dema","dema9",
@@ -63,25 +61,38 @@ def parse_piece(text):
     t = text.lower()
     out = {}
 
-    # TICKER
-    tick = extract_ticker(text)
-    if tick:
-        out["ticker"] = tick
+    # 🔥 TICKER-LOCK — ticker ustawiasz raz, nigdy się nie zmienia
+    if current["ticker"] is None:
+        tick = extract_ticker(text)
+        if tick:
+            out["ticker"] = tick
 
     # GODZINA
     m = re.search(r"\b(\d{1,2}:\d{2})\b", t)
     if m:
         out["time"] = m.group(1)
 
-    # OLHC
-    m = re.search(r"\bo\s+([\d\., ]+)", t)
-    if m: out["open"] = norm(m.group(1))
+    # 🔥 FONETYCZNA + PEŁNA KOREKCJA O / L / H / C / OPEN / HIGH / LOW / CENA
 
-    m = re.search(r"\bl\s+([\d\., ]+)", t)
-    if m: out["low"] = norm(m.group(1))
+    # --- OPEN ---
+    m = re.search(r"\b(o|oh|ou|oo|open)\s+([\d\., ]+)", t)
+    if m:
+        out["open"] = norm(m.group(2))
 
-    m = re.search(r"\bh\s+([\d\., ]+)", t)
-    if m: out["high"] = norm(m.group(1))
+    # --- LOW ---
+    m = re.search(r"\b(l|el|al|ł|elle|low)\s+([\d\., ]+)", t)
+    if m:
+        out["low"] = norm(m.group(2))
+
+    # --- HIGH ---
+    m = re.search(r"\b(h|ha|he|hi|high)\s+([\d\., ]+)", t)
+    if m:
+        out["high"] = norm(m.group(2))
+
+    # --- CLOSE ---
+    m = re.search(r"\b(c|ce|se|si|ci|see|cena)\s+([\d\., ]+)", t)
+    if m:
+        out["close"] = norm(m.group(2))
 
     # BLOKADA hi185 → HIGH
     m = re.search(r"\bhi\s*([\d\., ]+)", t)
@@ -90,27 +101,35 @@ def parse_piece(text):
 
     # MA20
     m = re.search(r"\bma\s*([\d\., ]+)", t)
-    if m: out["ma20"] = norm(m.group(1))
+    if m:
+        out["ma20"] = norm(m.group(1))
 
     m = re.search(r"ma20\s*([\d\., ]+)", t)
-    if m: out["ma20"] = norm(m.group(1))
+    if m:
+        out["ma20"] = norm(m.group(1))
 
     # DEMA9
     m = re.search(r"\bdema\s*([\d\., ]+)", t)
-    if m: out["dema9"] = norm(m.group(1))
+    if m:
+        out["dema9"] = norm(m.group(1))
 
     m = re.search(r"dema9\s*([\d\., ]+)", t)
-    if m: out["dema9"] = norm(m.group(1))
+    if m:
+        out["dema9"] = norm(m.group(1))
 
     # RSI
     m = re.search(r"rsi\s*([\d\., ]+)", t)
-    if m: out["rsi"] = norm(m.group(1))
+    if m:
+        out["rsi"] = norm(m.group(1))
 
     # WOLUMEN
     m = re.search(r"wolumen\s*([\d\., ]+)", t)
-    if m: out["volume"] = norm(m.group(1))
+    if m:
+        out["volume"] = norm(m.group(1))
 
-    # 🔥 AUTOKOREKTA INTERWAŁÓW (Chrome myli M z H)
+    # 🔥 AUTOKOREKTA INTERWAŁÓW (M ↔ H + słowne)
+
+    # bezpośrednie Mxx
     if "m15" in t or "m 15" in t:
         out["interval"] = "M15"
     elif "m5" in t or "m 5" in t:
@@ -120,7 +139,7 @@ def parse_piece(text):
     elif "m30" in t or "m 30" in t:
         out["interval"] = "M30"
 
-    # Chrome błędnie robi h1/h5/h15/h30
+    # Chrome robi h1/h5/h15/h30 zamiast M
     if re.search(r"\bh1\b", t) and not out.get("interval"):
         out["interval"] = "M1"
     if re.search(r"\bh5\b", t) and not out.get("interval"):
@@ -130,7 +149,7 @@ def parse_piece(text):
     if re.search(r"\bh30\b", t) and not out.get("interval"):
         out["interval"] = "M30"
 
-    # 🔥 ROZPOZNAWANIE SŁOWNE INTERWAŁÓW
+    # słowne interwały
     if "jedna minuta" in t or "minuta" in t:
         out["interval"] = "M1"
     if "pięć minut" in t:
