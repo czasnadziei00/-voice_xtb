@@ -1,11 +1,22 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import re
 
 app = FastAPI()
 
+# 🔥 CORS — MUSI BYĆ
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],       # pozwala na 127.0.0.1:5500
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 class VoiceRequest(BaseModel):
     text: str
+
 
 def norm(x):
     if not x:
@@ -84,7 +95,29 @@ def parse_voice(text: str):
 
     return data
 
+
+def system_45_logic(d):
+    o = d.get("open")
+    c = d.get("close")
+    ma = d.get("ma20")
+    de = d.get("dema9")
+
+    if None in (o, c, ma, de):
+        return None, "Brak danych do sygnału."
+
+    if c > ma and c > de:
+        return "BUY", "Cena powyżej MA20 i DEMA9 — trend wzrostowy."
+    elif c < ma and c < de:
+        return "SELL", "Cena poniżej MA20 i DEMA9 — trend spadkowy."
+    else:
+        return "CZEKAJ", "Brak wyraźnego sygnału."
+
+
+# 🔥 JEDYNY POPRAWNY ENDPOINT
 @app.post("/voice-parse")
 def voice_parse(req: VoiceRequest):
     parsed = parse_voice(req.text)
+    signal, comment = system_45_logic(parsed)
+    parsed["signal"] = signal
+    parsed["comment"] = comment
     return parsed
