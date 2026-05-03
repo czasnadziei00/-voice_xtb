@@ -5,6 +5,7 @@ import re
 
 app = FastAPI()
 
+# 🔥 CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,7 +17,7 @@ app.add_middleware(
 class VoiceRequest(BaseModel):
     text: str
 
-# 🔥 BUFOR DANYCH (system 4.6)
+# 🔥 BUFOR SYSTEMU 4.6 — składanie danych
 current = {
     "ticker": None,
     "interval": None,
@@ -58,6 +59,7 @@ def extract_ticker(text):
             return w.upper()
     return None
 
+# 🔥 PARSER POJEDYNCZEJ KOMENDY
 def parse_piece(text):
     t = text.lower()
     out = {}
@@ -91,24 +93,39 @@ def parse_piece(text):
     m = re.search(r"\bc\s*([\d\., ]+)", t)
     if m: out["close"] = norm(m.group(1))
 
-    # MA20
-    m = re.search(r"ma20\s*([\d\., ]+)", t)
-    if m: out["ma20"] = norm(m.group(1))
+    # 🔥 MA20 — KRÓTKA KOMENDA "ma"
+    m = re.search(r"\bma\s*([\d\., ]+)", t)
+    if m:
+        out["ma20"] = norm(m.group(1))
 
-    # DEMA9
+    # MA20 — pełna forma
+    m = re.search(r"ma20\s*([\d\., ]+)", t)
+    if m:
+        out["ma20"] = norm(m.group(1))
+
+    # 🔥 DEMA9 — KRÓTKA KOMENDA "dema"
+    m = re.search(r"\bdema\s*([\d\., ]+)", t)
+    if m:
+        out["dema9"] = norm(m.group(1))
+
+    # DEMA9 — pełna forma
     m = re.search(r"dema9\s*([\d\., ]+)", t)
-    if m: out["dema9"] = norm(m.group(1))
+    if m:
+        out["dema9"] = norm(m.group(1))
 
     # RSI
     m = re.search(r"rsi\s*([\d\., ]+)", t)
-    if m: out["rsi"] = norm(m.group(1))
+    if m:
+        out["rsi"] = norm(m.group(1))
 
     # Volume
     m = re.search(r"wolumen\s*([\d\., ]+)", t)
-    if m: out["volume"] = norm(m.group(1))
+    if m:
+        out["volume"] = norm(m.group(1))
 
     return out
 
+# 🔥 LOGIKA SYSTEMU 4.5+
 def system_45_logic(d):
     o = d.get("open")
     c = d.get("close")
@@ -125,6 +142,7 @@ def system_45_logic(d):
     else:
         return "CZEKAJ", "Brak wyraźnego sygnału."
 
+# 🔥 Czy komplet danych?
 def is_complete(d):
     return all([
         d["ticker"],
@@ -140,28 +158,29 @@ def is_complete(d):
         d["volume"]
     ])
 
+# 🔥 ENDPOINT
 @app.post("/voice-parse")
 def voice_parse(req: VoiceRequest):
     global current
 
     piece = parse_piece(req.text)
 
-    # 🔥 uzupełniamy bufor
+    # uzupełniamy bufor
     for k, v in piece.items():
         if v is not None:
             current[k] = v
 
-    # 🔥 jeśli komplet → zwracamy i czyścimy
+    # jeśli komplet → zwracamy i czyścimy
     if is_complete(current):
         signal, comment = system_45_logic(current)
         out = current.copy()
         out["signal"] = signal
         out["comment"] = comment
 
-        # czyścimy bufor
+        # reset bufora
         current = {k: None for k in current}
 
         return out
 
-    # 🔥 jeśli niekompletne → zwracamy tylko to, co mamy
+    # jeśli niekompletne → zwracamy stan bufora
     return {**current, "signal": None, "comment": "Czekam na brakujące dane…"}
