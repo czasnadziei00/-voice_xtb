@@ -18,6 +18,10 @@ class VoiceRequest(BaseModel):
     text: str
 
 
+# -----------------------------
+# 🔥 FUNKCJE POMOCNICZE
+# -----------------------------
+
 def norm(x):
     if not x:
         return None
@@ -27,14 +31,35 @@ def norm(x):
     except:
         return None
 
+
 INTERVALS = ["M1","M5","M15","M30","H1","H4","D1","W1"]
+
+BAD_WORDS = {
+    "o","l","h","c",
+    "ma","ma20","dema","dema9",
+    "rsi","wolumen",
+    "m1","m5","m15","m30","h1","h4","d1","w1"
+}
+
+def extract_ticker(text):
+    for w in text.split():
+        w_clean = w.lower()
+        if w_clean in BAD_WORDS:
+            continue
+        if re.fullmatch(r"[A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]+", w_clean):
+            return w.upper()
+    return None
+
+
+# -----------------------------
+# 🔥 PARSER GŁOSU
+# -----------------------------
 
 def parse_voice(text: str):
     t = text.lower()
-    tokens = t.split()
 
     data = {
-        "ticker": None,
+        "ticker": extract_ticker(text),
         "interval": None,
         "time": None,
         "open": None,
@@ -46,12 +71,6 @@ def parse_voice(text: str):
         "rsi": None,
         "volume": None
     }
-
-    # ticker
-    for w in text.split():
-        if re.fullmatch(r"[A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]+", w):
-            data["ticker"] = w.upper()
-            break
 
     # interval
     for iv in INTERVALS:
@@ -96,6 +115,10 @@ def parse_voice(text: str):
     return data
 
 
+# -----------------------------
+# 🔥 LOGIKA SYSTEMU 4.5+
+# -----------------------------
+
 def system_45_logic(d):
     o = d.get("open")
     c = d.get("close")
@@ -113,7 +136,10 @@ def system_45_logic(d):
         return "CZEKAJ", "Brak wyraźnego sygnału."
 
 
+# -----------------------------
 # 🔥 JEDYNY POPRAWNY ENDPOINT
+# -----------------------------
+
 @app.post("/voice-parse")
 def voice_parse(req: VoiceRequest):
     parsed = parse_voice(req.text)
