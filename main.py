@@ -5,10 +5,9 @@ import re
 
 app = FastAPI()
 
-# 🔥 CORS — MUSI BYĆ
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],       # pozwala na 127.0.0.1:5500
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -17,20 +16,20 @@ app.add_middleware(
 class VoiceRequest(BaseModel):
     text: str
 
-
-# -----------------------------
-# 🔥 FUNKCJE POMOCNICZE
-# -----------------------------
-
-def norm(x):
-    if not x:
-        return None
-    x = x.replace(" ", "").replace(",", ".")
-    try:
-        return float(x)
-    except:
-        return None
-
+# 🔥 BUFOR DANYCH (system 4.6)
+current = {
+    "ticker": None,
+    "interval": None,
+    "time": None,
+    "open": None,
+    "high": None,
+    "low": None,
+    "close": None,
+    "ma20": None,
+    "dema9": None,
+    "rsi": None,
+    "volume": None
+}
 
 INTERVALS = ["M1","M5","M15","M30","H1","H4","D1","W1"]
 
@@ -41,6 +40,15 @@ BAD_WORDS = {
     "m1","m5","m15","m30","h1","h4","d1","w1"
 }
 
+def norm(x):
+    if not x:
+        return None
+    x = x.replace(" ", "").replace(",", ".")
+    try:
+        return float(x)
+    except:
+        return None
+
 def extract_ticker(text):
     for w in text.split():
         w_clean = w.lower()
@@ -50,74 +58,56 @@ def extract_ticker(text):
             return w.upper()
     return None
 
-
-# -----------------------------
-# 🔥 PARSER GŁOSU
-# -----------------------------
-
-def parse_voice(text: str):
+def parse_piece(text):
     t = text.lower()
+    out = {}
 
-    data = {
-        "ticker": extract_ticker(text),
-        "interval": None,
-        "time": None,
-        "open": None,
-        "high": None,
-        "low": None,
-        "close": None,
-        "ma20": None,
-        "dema9": None,
-        "rsi": None,
-        "volume": None
-    }
+    # ticker
+    tick = extract_ticker(text)
+    if tick:
+        out["ticker"] = tick
 
     # interval
     for iv in INTERVALS:
         if iv.lower() in t:
-            data["interval"] = iv
+            out["interval"] = iv
             break
 
     # time
     m = re.search(r"\b(\d{1,2}:\d{2})\b", t)
     if m:
-        data["time"] = m.group(1)
+        out["time"] = m.group(1)
 
     # OLHC
     m = re.search(r"\bo\s+([\d\., ]+)", t)
-    if m: data["open"] = norm(m.group(1))
+    if m: out["open"] = norm(m.group(1))
 
     m = re.search(r"\bl\s+([\d\., ]+)", t)
-    if m: data["low"] = norm(m.group(1))
+    if m: out["low"] = norm(m.group(1))
 
     m = re.search(r"\bh\s+([\d\., ]+)", t)
-    if m: data["high"] = norm(m.group(1))
+    if m: out["high"] = norm(m.group(1))
 
     m = re.search(r"\bc\s*([\d\., ]+)", t)
-    if m: data["close"] = norm(m.group(1))
+    if m: out["close"] = norm(m.group(1))
 
     # MA20
     m = re.search(r"ma20\s*([\d\., ]+)", t)
-    if m: data["ma20"] = norm(m.group(1))
+    if m: out["ma20"] = norm(m.group(1))
 
     # DEMA9
     m = re.search(r"dema9\s*([\d\., ]+)", t)
-    if m: data["dema9"] = norm(m.group(1))
+    if m: out["dema9"] = norm(m.group(1))
 
     # RSI
     m = re.search(r"rsi\s*([\d\., ]+)", t)
-    if m: data["rsi"] = norm(m.group(1))
+    if m: out["rsi"] = norm(m.group(1))
 
     # Volume
     m = re.search(r"wolumen\s*([\d\., ]+)", t)
-    if m: data["volume"] = norm(m.group(1))
+    if m: out["volume"] = norm(m.group(1))
 
-    return data
-
-
-# -----------------------------
-# 🔥 LOGIKA SYSTEMU 4.5+
-# -----------------------------
+    return out
 
 def system_45_logic(d):
     o = d.get("open")
@@ -135,15 +125,43 @@ def system_45_logic(d):
     else:
         return "CZEKAJ", "Brak wyraźnego sygnału."
 
-
-# -----------------------------
-# 🔥 JEDYNY POPRAWNY ENDPOINT
-# -----------------------------
+def is_complete(d):
+    return all([
+        d["ticker"],
+        d["interval"],
+        d["time"],
+        d["open"],
+        d["high"],
+        d["low"],
+        d["close"],
+        d["ma20"],
+        d["dema9"],
+        d["rsi"],
+        d["volume"]
+    ])
 
 @app.post("/voice-parse")
 def voice_parse(req: VoiceRequest):
-    parsed = parse_voice(req.text)
-    signal, comment = system_45_logic(parsed)
-    parsed["signal"] = signal
-    parsed["comment"] = comment
-    return parsed
+    global current
+
+    piece = parse_piece(req.text)
+
+    # 🔥 uzupełniamy bufor
+    for k, v in piece.items():
+        if v is not None:
+            current[k] = v
+
+    # 🔥 jeśli komplet → zwracamy i czyścimy
+    if is_complete(current):
+        signal, comment = system_45_logic(current)
+        out = current.copy()
+        out["signal"] = signal
+        out["comment"] = comment
+
+        # czyścimy bufor
+        current = {k: None for k in current}
+
+        return out
+
+    # 🔥 jeśli niekompletne → zwracamy tylko to, co mamy
+    return {**current, "signal": None, "comment": "Czekam na brakujące dane…"}
