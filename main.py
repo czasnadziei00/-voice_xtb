@@ -5,7 +5,7 @@ import re
 
 app = FastAPI()
 
-# 🔥 CORS
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,7 +17,7 @@ app.add_middleware(
 class VoiceRequest(BaseModel):
     text: str
 
-# 🔥 BUFOR SYSTEMU 4.6 — składanie danych
+# BUFOR SYSTEMU 4.6
 current = {
     "ticker": None,
     "interval": None,
@@ -59,23 +59,16 @@ def extract_ticker(text):
             return w.upper()
     return None
 
-# 🔥 PARSER POJEDYNCZEJ KOMENDY
 def parse_piece(text):
     t = text.lower()
     out = {}
 
-    # ticker
+    # TICKER
     tick = extract_ticker(text)
     if tick:
         out["ticker"] = tick
 
-    # interval
-    for iv in INTERVALS:
-        if iv.lower() in t:
-            out["interval"] = iv
-            break
-
-    # time
+    # GODZINA
     m = re.search(r"\b(\d{1,2}:\d{2})\b", t)
     if m:
         out["time"] = m.group(1)
@@ -90,42 +83,65 @@ def parse_piece(text):
     m = re.search(r"\bh\s+([\d\., ]+)", t)
     if m: out["high"] = norm(m.group(1))
 
-    m = re.search(r"\bc\s*([\d\., ]+)", t)
-    if m: out["close"] = norm(m.group(1))
+    # BLOKADA hi185 → HIGH
+    m = re.search(r"\bhi\s*([\d\., ]+)", t)
+    if m:
+        out["high"] = norm(m.group(1))
 
-    # 🔥 MA20 — KRÓTKA KOMENDA "ma"
+    # MA20
     m = re.search(r"\bma\s*([\d\., ]+)", t)
-    if m:
-        out["ma20"] = norm(m.group(1))
+    if m: out["ma20"] = norm(m.group(1))
 
-    # MA20 — pełna forma
     m = re.search(r"ma20\s*([\d\., ]+)", t)
-    if m:
-        out["ma20"] = norm(m.group(1))
+    if m: out["ma20"] = norm(m.group(1))
 
-    # 🔥 DEMA9 — KRÓTKA KOMENDA "dema"
+    # DEMA9
     m = re.search(r"\bdema\s*([\d\., ]+)", t)
-    if m:
-        out["dema9"] = norm(m.group(1))
+    if m: out["dema9"] = norm(m.group(1))
 
-    # DEMA9 — pełna forma
     m = re.search(r"dema9\s*([\d\., ]+)", t)
-    if m:
-        out["dema9"] = norm(m.group(1))
+    if m: out["dema9"] = norm(m.group(1))
 
     # RSI
     m = re.search(r"rsi\s*([\d\., ]+)", t)
-    if m:
-        out["rsi"] = norm(m.group(1))
+    if m: out["rsi"] = norm(m.group(1))
 
-    # Volume
+    # WOLUMEN
     m = re.search(r"wolumen\s*([\d\., ]+)", t)
-    if m:
-        out["volume"] = norm(m.group(1))
+    if m: out["volume"] = norm(m.group(1))
+
+    # 🔥 AUTOKOREKTA INTERWAŁÓW (Chrome myli M z H)
+    if "m15" in t or "m 15" in t:
+        out["interval"] = "M15"
+    elif "m5" in t or "m 5" in t:
+        out["interval"] = "M5"
+    elif "m1" in t or "m 1" in t:
+        out["interval"] = "M1"
+    elif "m30" in t or "m 30" in t:
+        out["interval"] = "M30"
+
+    # Chrome błędnie robi h1/h5/h15/h30
+    if re.search(r"\bh1\b", t) and not out.get("interval"):
+        out["interval"] = "M1"
+    if re.search(r"\bh5\b", t) and not out.get("interval"):
+        out["interval"] = "M5"
+    if re.search(r"\bh15\b", t) and not out.get("interval"):
+        out["interval"] = "M15"
+    if re.search(r"\bh30\b", t) and not out.get("interval"):
+        out["interval"] = "M30"
+
+    # 🔥 ROZPOZNAWANIE SŁOWNE INTERWAŁÓW
+    if "jedna minuta" in t or "minuta" in t:
+        out["interval"] = "M1"
+    if "pięć minut" in t:
+        out["interval"] = "M5"
+    if "piętnaście minut" in t:
+        out["interval"] = "M15"
+    if "trzydzieści minut" in t:
+        out["interval"] = "M30"
 
     return out
 
-# 🔥 LOGIKA SYSTEMU 4.5+
 def system_45_logic(d):
     o = d.get("open")
     c = d.get("close")
@@ -142,45 +158,30 @@ def system_45_logic(d):
     else:
         return "CZEKAJ", "Brak wyraźnego sygnału."
 
-# 🔥 Czy komplet danych?
 def is_complete(d):
     return all([
-        d["ticker"],
-        d["interval"],
-        d["time"],
-        d["open"],
-        d["high"],
-        d["low"],
-        d["close"],
-        d["ma20"],
-        d["dema9"],
-        d["rsi"],
-        d["volume"]
+        d["ticker"], d["interval"], d["time"],
+        d["open"], d["high"], d["low"], d["close"],
+        d["ma20"], d["dema9"], d["rsi"], d["volume"]
     ])
 
-# 🔥 ENDPOINT
 @app.post("/voice-parse")
 def voice_parse(req: VoiceRequest):
     global current
 
     piece = parse_piece(req.text)
 
-    # uzupełniamy bufor
     for k, v in piece.items():
         if v is not None:
             current[k] = v
 
-    # jeśli komplet → zwracamy i czyścimy
     if is_complete(current):
         signal, comment = system_45_logic(current)
         out = current.copy()
         out["signal"] = signal
         out["comment"] = comment
 
-        # reset bufora
         current = {k: None for k in current}
-
         return out
 
-    # jeśli niekompletne → zwracamy stan bufora
     return {**current, "signal": None, "comment": "Czekam na brakujące dane…"}
