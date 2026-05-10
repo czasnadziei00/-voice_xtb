@@ -37,15 +37,19 @@ def empty_state():
         "comment": "Czekam na dane…",
     }
 
-memory = {}              # 🔥 każdy ticker ma własny stan
-last_used_ticker = None  # 🔥 ostatni ticker, który user wymówił
+memory = {}
+last_used_ticker = None
 
 BAD_WORDS = {
     "o","l","h","c",
     "ma","ma20","dema","dema9",
-    "rsi","wolumen","entry","usuń","usun",
+    "rsi","wolumen","volume","entry","usuń","usun",
     "open","low","high","close","cena",
-    "m1","m5","m15","m30","h1","h4","d1","w1"
+    "m1","m5","m15","m30","h1","h4","d1","w1",
+    # aliasy które NIE mogą być tickerami
+    "hi","haj","hai","hay","hał","hajh","haih",
+    "loł","lowe","lołe","lołł","lołu","loło","lołej","loły",
+    "bema","bema9","b ma","b ema"
 }
 
 def norm(x):
@@ -58,6 +62,7 @@ def norm(x):
         return None
 
 def extract_ticker(text: str):
+    """Zwraca ticker tylko jeśli słowo NIE jest parametrem."""
     for w in text.split():
         w_clean = w.lower()
         if w_clean in BAD_WORDS:
@@ -70,49 +75,74 @@ def parse_piece(text: str, ticker=None):
     t = text.lower()
     out = {"ticker": ticker}
 
+    # USUŃ
     if "usuń" in t or "usun" in t:
         out["delete"] = True
 
+    # TIME
     m = re.search(r"\b(\d{1,2}:\d{2})\b", t)
     if m:
         out["time"] = m.group(1)
 
+    # ENTRY
     m = re.search(r"entry\s*([\d\., ]+)", t)
     if m:
         out["entry"] = norm(m.group(1))
 
+    # OPEN
     m = re.search(r"\b(o|open)\s+([\d\., ]+)", t)
     if m:
         out["open"] = norm(m.group(2))
 
+    # LOW
     m = re.search(r"\b(l|low)\s+([\d\., ]+)", t)
     if m:
         out["low"] = norm(m.group(2))
 
+    # 🔥 ALIASY LOW
+    for alias in ["loł","lowe","lołe","lołł","lołu","loło","lołej","loły"]:
+        m = re.search(rf"\b{alias}\s+([\d\., ]+)", t)
+        if m:
+            out["low"] = norm(m.group(1))
+
+    # HIGH
     m = re.search(r"\b(h|high)\s+([\d\., ]+)", t)
     if m:
         out["high"] = norm(m.group(2))
 
-    m = re.search(r"\b(c|close|cena)\s+([\d\., ]+)", t)
-    if m:
-        out["close"] = norm(m.group(2))
+    # 🔥 ALIASY HIGH
+    for alias in ["hi","haj","hai","hay","hał","hajh","haih"]:
+        m = re.search(rf"\b{alias}\s+([\d\., ]+)", t)
+        if m:
+            out["high"] = norm(m.group(1))
 
+    # MA20
     m = re.search(r"ma20\s*([\d\., ]+)", t)
     if m:
         out["ma20"] = norm(m.group(1))
 
+    # DEMA9
     m = re.search(r"dema9\s*([\d\., ]+)", t)
     if m:
         out["dema9"] = norm(m.group(1))
 
+    # 🔥 ALIASY DEMA
+    for alias in ["bema9","bema","b ma","b ema"]:
+        m = re.search(rf"\b{alias}\s*([\d\., ]+)", t)
+        if m:
+            out["dema9"] = norm(m.group(1))
+
+    # RSI
     m = re.search(r"rsi\s*([\d\., ]+)", t)
     if m:
         out["rsi"] = norm(m.group(1))
 
-    m = re.search(r"wolumen\s*([\d\., ]+)", t)
+    # VOLUME
+    m = re.search(r"(wolumen|volume)\s*([\d\., ]+)", t)
     if m:
-        out["volume"] = norm(m.group(1))
+        out["volume"] = norm(m.group(2))
 
+    # INTERWAŁY
     if "m15" in t:
         out["interval"] = "M15"
     elif "m5" in t:
@@ -144,20 +174,16 @@ def system_45_logic(d):
 def voice_parse(req: VoiceRequest):
     global last_used_ticker
 
-    text = req.text
+    text = req.text.strip()
 
-    # 1. Czy user podał ticker w tej wypowiedzi?
+    # 1️⃣ Czy padł ticker?
     candidate = extract_ticker(text)
+    ticker = candidate if candidate else last_used_ticker
 
-    if candidate:
-        ticker = candidate
-        last_used_ticker = ticker
-    else:
-        ticker = last_used_ticker
-
+    # 2️⃣ Parsowanie
     piece = parse_piece(text, ticker=ticker)
 
-    # 2. Obsługa "usuń"
+    # 3️⃣ USUŃ
     if piece.get("delete") and ticker:
         if ticker in memory:
             del memory[ticker]
@@ -165,7 +191,7 @@ def voice_parse(req: VoiceRequest):
             last_used_ticker = None
         return {"ticker": ticker, "deleted": True, "comment": f"Usunięto {ticker}"}
 
-    # 3. Nadal brak tickera
+    # 4️⃣ Brak tickera
     if not ticker:
         return {
             "ticker": None,
@@ -184,19 +210,19 @@ def voice_parse(req: VoiceRequest):
             "comment": "Brak tickera — podaj nazwę spółki."
         }
 
-    # 4. Pobierz lub utwórz kontekst
+    # 5️⃣ Pobierz/utwórz kontekst
     state = memory.get(ticker)
     if state is None:
         state = empty_state()
         state["ticker"] = ticker
         memory[ticker] = state
 
-    # 5. Aktualizacja pól
+    # 6️⃣ Aktualizacja pól
     for key in ["interval","time","open","high","low","close","ma20","dema9","rsi","volume"]:
         if piece.get(key) is not None:
             state[key] = piece[key]
 
-    # 6. ENTRY
+    # 7️⃣ ENTRY
     if piece.get("entry") is not None:
         if piece["entry"] == 0:
             state["entry"] = None
@@ -205,7 +231,7 @@ def voice_parse(req: VoiceRequest):
         else:
             state["entry"] = piece["entry"]
 
-    # 7. Logika 4.5+
+    # 8️⃣ Logika 4.5+
     sig, com = system_45_logic(state)
     if sig:
         state["signal"] = sig
@@ -215,6 +241,7 @@ def voice_parse(req: VoiceRequest):
         if "Pozycja zamknięta" not in state["comment"]:
             state["comment"] = "Czekam na brakujące dane…"
 
+    last_used_ticker = ticker
     return state
 
 @app.post("/voice-parse/delete")
