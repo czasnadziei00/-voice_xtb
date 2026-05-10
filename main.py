@@ -1,9 +1,19 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, Dict
+from typing import Dict
 import uvicorn
 
 app = FastAPI()
+
+# ====== CORS — MUSI BYĆ NA RENDER ======
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ====== MODELE ======
 
@@ -66,58 +76,54 @@ def analyze_signal_d1_h1(ticker: str,
                          d1: Dict,
                          h1: Dict) -> Dict:
     """
-    Prosta logika 4.5+ NA JUTRO 2.0 (szkielet).
-    FINAL = D1, H1 tylko jako filtr.
-    Tu możesz później włożyć swoją pełną logikę 4.5+.
+    Logika NA JUTRO 2.0:
+    FINAL = D1
+    H1 = filtr
     """
-
     final = empty_ohlc()
+
     # FINAL = D1
     if d1:
         final.update(d1)
     final["interval"] = "D1/H1"
 
-    # prosta logika sygnału (placeholder)
     signal = "CZEKAJ"
     comment = "Brak pełnych danych D1."
     good = False
     widełki = ""
     tp = ""
 
+    # ====== LOGIKA D1 ======
     if d1 and d1.get("close") and d1.get("ma20") and d1.get("dema9") and d1.get("rsi"):
         close = d1["close"]
         ma20 = d1["ma20"]
         dema9 = d1["dema9"]
         rsi = d1["rsi"]
 
-        # przykładowa logika:
-        # - close > ma20 i close > dema9
-        # - rsi w strefie 50–70
         if close > ma20 and close > dema9 and 50 <= rsi <= 70:
             signal = "BUY"
             good = True
-            comment = "Trend wzrostowy D1, close powyżej MA20 i DEMA9, RSI w strefie siły."
+            comment = "Trend wzrostowy D1, close > MA20 i DEMA9, RSI w strefie siły."
         else:
             signal = "CZEKAJ"
             good = False
-            comment = "D1 nie spełnia warunków silnego trendu."
+            comment = "D1 nie spełnia warunków trendu."
 
-        # prosty przykład widełek i TP
+        # widełki + TP
         if d1.get("low") and d1.get("high"):
             low = d1["low"]
             high = d1["high"]
-            mid = (low + high) / 2
             widełki = f"{round(low, 2)} - {round(high, 2)}"
             tp1 = round(high * 1.01, 2)
             tp2 = round(high * 1.02, 2)
             tp3 = round(high * 1.03, 2)
             tp = f"{tp1} / {tp2} / {tp3}"
 
-    # H1 jako filtr (przykład: jeśli jest, a RSI < 40, to osłabiamy sygnał)
+    # ====== FILTR H1 ======
     if h1 and h1.get("rsi") is not None and h1["rsi"] < 40 and signal == "BUY":
         signal = "CZEKAJ"
         good = False
-        comment += " H1 pokazuje słabe momentum (RSI < 40)."
+        comment += " H1 słabe momentum (RSI < 40)."
 
     return {
         "ticker": ticker,
@@ -136,11 +142,8 @@ def parse_d1_h1_from_text(text: str) -> Dict:
     """
     Styl B:
     - 'KGHM D1 195 193 200 198 190 195 62 197 120000'
-      open low high close ma20 dema9 rsi vwap volume
     - 'KGHM H1 196 194 198 197 195 196 58 196.5 34000'
-    Kolejność dowolna, mogą być tylko D1, tylko H1, albo oba.
     """
-
     t = text.lower().split()
     ticker = None
     d1 = empty_ohlc()
@@ -152,7 +155,7 @@ def parse_d1_h1_from_text(text: str) -> Dict:
     while i < len(t):
         token = t[i]
 
-        # ticker = pierwsze słowo nie będące d1/h1/liczbą
+        # ticker = pierwsze słowo nie będące liczbą ani d1/h1
         if ticker is None and token not in ["d1", "h1"]:
             if not token.replace(",", ".").replace(".", "").isdigit():
                 ticker = token
@@ -162,7 +165,6 @@ def parse_d1_h1_from_text(text: str) -> Dict:
         if token == "d1":
             has_d1 = True
             i += 1
-            # open, low, high, close, ma20, dema9, rsi, vwap, volume
             d1["open"], i = parse_number_tokens(t, i)
             d1["low"], i = parse_number_tokens(t, i)
             d1["high"], i = parse_number_tokens(t, i)
@@ -207,16 +209,12 @@ def parse_d1_h1_from_text(text: str) -> Dict:
 
 @app.post("/parse")
 def parse_tomorrow(req: VoiceRequest):
-    """
-    NA JUTRO 2.0
-    Styl B: KGHM D1 ... H1 ...
-    """
     text = req.text
     result = parse_d1_h1_from_text(text)
     return result
 
 
-# (Twój istniejący /voice-parse zostaje bez zmian)
+# ====== URUCHOMIENIE ======
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
