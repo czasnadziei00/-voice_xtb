@@ -38,7 +38,7 @@ def empty_state():
     }
 
 memory = {}
-last_ticker = None   # 🔥 GLOBALNY AKTYWNY TICKER
+last_ticker = None   # 🔥 ABSOLUTNY AKTYWNY TICKER
 
 BAD_WORDS = {
     "o","l","h","c",
@@ -74,7 +74,7 @@ def parse_piece(text: str, existing_ticker=None):
     if "usuń" in t or "usun" in t:
         out["delete"] = True
 
-    # ticker jest blokowany — jeśli istnieje, NIE SZUKAMY nowego
+    # 🔥 BLOKADA ABSOLUTNA — jeśli ticker istnieje, NIE SZUKAMY nowego
     if existing_ticker:
         out["ticker"] = existing_ticker
     else:
@@ -166,21 +166,20 @@ def voice_parse(req: VoiceRequest):
 
     text = req.text
 
-    # 1. Czy user podał nowy ticker?
-    candidate = extract_ticker(text)
-
-    if candidate:
-        # świadome podanie nowego tickera
-        ticker = candidate
-        last_ticker = ticker
-    else:
-        # dopowiedzenie → użyj ostatniego tickera
+    # 🔥 1. Jeśli mamy aktywny ticker → NIE SZUKAMY nowego
+    if last_ticker:
         ticker = last_ticker
+        piece = parse_piece(text, existing_ticker=ticker)
 
-    # parsowanie z blokadą tickera
-    piece = parse_piece(text, existing_ticker=ticker)
+    else:
+        # 🔥 2. Nie mamy aktywnego tickera → szukamy nowego
+        candidate = extract_ticker(text)
+        ticker = candidate
+        piece = parse_piece(text, existing_ticker=ticker)
+        if ticker:
+            last_ticker = ticker
 
-    # obsługa "usuń"
+    # 🔥 3. Obsługa "usuń"
     if piece.get("delete") and ticker:
         if ticker in memory:
             del memory[ticker]
@@ -188,7 +187,7 @@ def voice_parse(req: VoiceRequest):
             last_ticker = None
         return {"ticker": ticker, "deleted": True, "comment": f"Usunięto {ticker}"}
 
-    # nadal brak tickera → user jeszcze nie podał żadnego
+    # 🔥 4. Nadal brak tickera → user jeszcze nie podał żadnego
     if not ticker:
         return {
             "ticker": None,
@@ -207,19 +206,19 @@ def voice_parse(req: VoiceRequest):
             "comment": "Brak tickera — podaj nazwę spółki."
         }
 
-    # pobierz lub utwórz kontekst
+    # 🔥 5. Pobierz lub utwórz kontekst
     state = memory.get(ticker)
     if state is None:
         state = empty_state()
         state["ticker"] = ticker
         memory[ticker] = state
 
-    # aktualizacja pól
+    # 🔥 6. Aktualizacja pól
     for key in ["interval","time","open","high","low","close","ma20","dema9","rsi","volume"]:
         if piece.get(key) is not None:
             state[key] = piece[key]
 
-    # ENTRY
+    # 🔥 7. ENTRY
     if piece.get("entry") is not None:
         if piece["entry"] == 0:
             state["entry"] = None
@@ -228,7 +227,7 @@ def voice_parse(req: VoiceRequest):
         else:
             state["entry"] = piece["entry"]
 
-    # logika 4.5+
+    # 🔥 8. Logika 4.5+
     sig, com = system_45_logic(state)
     if sig:
         state["signal"] = sig
