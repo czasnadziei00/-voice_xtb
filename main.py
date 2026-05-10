@@ -37,8 +37,7 @@ def empty_state():
         "comment": "Czekam na dane…",
     }
 
-memory = {}  # ticker -> state dict
-
+memory = {}  # ticker → state dict
 
 BAD_WORDS = {
     "o","l","h","c",
@@ -65,14 +64,20 @@ def extract_ticker(text: str):
             return w.upper()
     return None
 
-def parse_piece(text: str):
+# ============================
+#  PARSER Z BLOKADĄ TICKERA
+# ============================
+def parse_piece(text: str, existing_ticker=None):
     t = text.lower()
     out = {}
 
-    # TICKER
-    tick = extract_ticker(text)
-    if tick:
-        out["ticker"] = tick
+    # 🔥 BLOKADA TICKERA — jeśli już istnieje, nie szukamy nowego
+    if existing_ticker:
+        out["ticker"] = existing_ticker
+    else:
+        tick = extract_ticker(text)
+        if tick:
+            out["ticker"] = tick
 
     # GODZINA
     m = re.search(r"\b(\d{1,2}:\d{2})\b", t)
@@ -162,6 +167,9 @@ def parse_piece(text: str):
 
     return out
 
+# ============================
+#  LOGIKA 4.5+
+# ============================
 def system_45_logic(d):
     o = d.get("open")
     c = d.get("close")
@@ -178,31 +186,28 @@ def system_45_logic(d):
     else:
         return "CZEKAJ", "Brak wyraźnego sygnału (strefa przejściowa)."
 
-def is_complete(d):
-    return all([
-        d.get("ticker"),
-        d.get("interval"),
-        d.get("time"),
-        d.get("open") is not None,
-        d.get("high") is not None,
-        d.get("low") is not None,
-        d.get("close") is not None,
-        d.get("ma20") is not None,
-        d.get("dema9") is not None,
-        d.get("rsi") is not None,
-        d.get("volume") is not None,
-    ])
-
 # ============================
 #  ENDPOINT 6.5 PRO
 # ============================
 @app.post("/voice-parse")
 def voice_parse(req: VoiceRequest):
-    piece = parse_piece(req.text)
+
+    # najpierw próbujemy znaleźć ticker w tekście
+    temp_ticker = extract_ticker(req.text)
+
+    # jeśli ticker istnieje w pamięci → używamy jego kontekstu
+    state = memory.get(temp_ticker) if temp_ticker else None
+
+    # jeśli istnieje kontekst → blokujemy ticker
+    existing_ticker = state["ticker"] if state else None
+
+    # parsujemy tekst z blokadą tickera
+    piece = parse_piece(req.text, existing_ticker=existing_ticker)
 
     ticker = piece.get("ticker")
+
+    # jeśli nadal brak tickera → zwracamy pusty szkielet
     if not ticker:
-        # brak tickera → frontend 6.5 to zignoruje
         return {
             "ticker": None,
             "interval": None,
@@ -219,7 +224,7 @@ def voice_parse(req: VoiceRequest):
             "comment": "Brak tickera — podaj nazwę spółki."
         }
 
-    # stan dla danego tickera
+    # pobieramy lub tworzymy kontekst
     state = memory.get(ticker)
     if state is None:
         state = empty_state()
@@ -227,12 +232,7 @@ def voice_parse(req: VoiceRequest):
         memory[ticker] = state
 
     # aktualizacja stanu
-    if piece.get("interval"):
-        state["interval"] = piece["interval"]
-    if piece.get("time"):
-        state["time"] = piece["time"]
-
-    for key in ["open","high","low","close","ma20","dema9","rsi","volume"]:
+    for key in ["interval","time","open","high","low","close","ma20","dema9","rsi","volume"]:
         if piece.get(key) is not None:
             state[key] = piece[key]
 
@@ -244,21 +244,4 @@ def voice_parse(req: VoiceRequest):
     else:
         state["comment"] = "Czekam na brakujące dane…"
 
-    # niczego nie resetujemy — multi‑ticker trzyma kontekst
-    out = {
-        "ticker": state["ticker"],
-        "interval": state["interval"],
-        "time": state["time"],
-        "open": state["open"],
-        "high": state["high"],
-        "low": state["low"],
-        "close": state["close"],
-        "ma20": state["ma20"],
-        "dema9": state["dema9"],
-        "rsi": state["rsi"],
-        "volume": state["volume"],
-        "signal": state["signal"],
-        "comment": state["comment"],
-    }
-
-    return out
+    return state
