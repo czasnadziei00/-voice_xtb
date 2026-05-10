@@ -37,8 +37,8 @@ def empty_state():
         "comment": "Czekam na dane…",
     }
 
-memory = {}
-last_ticker = None   # 🔥 ABSOLUTNY AKTYWNY TICKER
+memory = {}              # 🔥 każdy ticker ma własny stan
+last_used_ticker = None  # 🔥 ostatni ticker, który user wymówił
 
 BAD_WORDS = {
     "o","l","h","c",
@@ -66,73 +66,53 @@ def extract_ticker(text: str):
             return w.upper()
     return None
 
-def parse_piece(text: str, existing_ticker=None):
+def parse_piece(text: str, ticker=None):
     t = text.lower()
-    out = {}
+    out = {"ticker": ticker}
 
-    # komenda głosowa "usuń"
     if "usuń" in t or "usun" in t:
         out["delete"] = True
 
-    # 🔥 BLOKADA ABSOLUTNA — jeśli ticker istnieje, NIE SZUKAMY nowego
-    if existing_ticker:
-        out["ticker"] = existing_ticker
-    else:
-        tick = extract_ticker(text)
-        if tick:
-            out["ticker"] = tick
-
-    # godzina
     m = re.search(r"\b(\d{1,2}:\d{2})\b", t)
     if m:
         out["time"] = m.group(1)
 
-    # ENTRY
     m = re.search(r"entry\s*([\d\., ]+)", t)
     if m:
         out["entry"] = norm(m.group(1))
 
-    # OPEN
     m = re.search(r"\b(o|open)\s+([\d\., ]+)", t)
     if m:
         out["open"] = norm(m.group(2))
 
-    # LOW
     m = re.search(r"\b(l|low)\s+([\d\., ]+)", t)
     if m:
         out["low"] = norm(m.group(2))
 
-    # HIGH
     m = re.search(r"\b(h|high)\s+([\d\., ]+)", t)
     if m:
         out["high"] = norm(m.group(2))
 
-    # CLOSE
     m = re.search(r"\b(c|close|cena)\s+([\d\., ]+)", t)
     if m:
         out["close"] = norm(m.group(2))
 
-    # MA20
     m = re.search(r"ma20\s*([\d\., ]+)", t)
     if m:
         out["ma20"] = norm(m.group(1))
 
-    # DEMA9
     m = re.search(r"dema9\s*([\d\., ]+)", t)
     if m:
         out["dema9"] = norm(m.group(1))
 
-    # RSI
     m = re.search(r"rsi\s*([\d\., ]+)", t)
     if m:
         out["rsi"] = norm(m.group(1))
 
-    # WOLUMEN
     m = re.search(r"wolumen\s*([\d\., ]+)", t)
     if m:
         out["volume"] = norm(m.group(1))
 
-    # INTERWAŁY
     if "m15" in t:
         out["interval"] = "M15"
     elif "m5" in t:
@@ -162,32 +142,30 @@ def system_45_logic(d):
 
 @app.post("/voice-parse")
 def voice_parse(req: VoiceRequest):
-    global last_ticker
+    global last_used_ticker
 
     text = req.text
 
-    # 🔥 1. Jeśli mamy aktywny ticker → NIE SZUKAMY nowego
-    if last_ticker:
-        ticker = last_ticker
-        piece = parse_piece(text, existing_ticker=ticker)
+    # 1. Czy user podał ticker w tej wypowiedzi?
+    candidate = extract_ticker(text)
 
-    else:
-        # 🔥 2. Nie mamy aktywnego tickera → szukamy nowego
-        candidate = extract_ticker(text)
+    if candidate:
         ticker = candidate
-        piece = parse_piece(text, existing_ticker=ticker)
-        if ticker:
-            last_ticker = ticker
+        last_used_ticker = ticker
+    else:
+        ticker = last_used_ticker
 
-    # 🔥 3. Obsługa "usuń"
+    piece = parse_piece(text, ticker=ticker)
+
+    # 2. Obsługa "usuń"
     if piece.get("delete") and ticker:
         if ticker in memory:
             del memory[ticker]
-        if last_ticker == ticker:
-            last_ticker = None
+        if last_used_ticker == ticker:
+            last_used_ticker = None
         return {"ticker": ticker, "deleted": True, "comment": f"Usunięto {ticker}"}
 
-    # 🔥 4. Nadal brak tickera → user jeszcze nie podał żadnego
+    # 3. Nadal brak tickera
     if not ticker:
         return {
             "ticker": None,
@@ -206,19 +184,19 @@ def voice_parse(req: VoiceRequest):
             "comment": "Brak tickera — podaj nazwę spółki."
         }
 
-    # 🔥 5. Pobierz lub utwórz kontekst
+    # 4. Pobierz lub utwórz kontekst
     state = memory.get(ticker)
     if state is None:
         state = empty_state()
         state["ticker"] = ticker
         memory[ticker] = state
 
-    # 🔥 6. Aktualizacja pól
+    # 5. Aktualizacja pól
     for key in ["interval","time","open","high","low","close","ma20","dema9","rsi","volume"]:
         if piece.get(key) is not None:
             state[key] = piece[key]
 
-    # 🔥 7. ENTRY
+    # 6. ENTRY
     if piece.get("entry") is not None:
         if piece["entry"] == 0:
             state["entry"] = None
@@ -227,7 +205,7 @@ def voice_parse(req: VoiceRequest):
         else:
             state["entry"] = piece["entry"]
 
-    # 🔥 8. Logika 4.5+
+    # 7. Logika 4.5+
     sig, com = system_45_logic(state)
     if sig:
         state["signal"] = sig
@@ -241,11 +219,11 @@ def voice_parse(req: VoiceRequest):
 
 @app.post("/voice-parse/delete")
 def delete_ticker(req: DeleteRequest):
-    global last_ticker
+    global last_used_ticker
     t = req.ticker.upper()
     if t in memory:
         del memory[t]
-        if last_ticker == t:
-            last_ticker = None
+        if last_used_ticker == t:
+            last_used_ticker = None
         return {"status": "deleted", "ticker": t}
     return {"status": "not_found", "ticker": t}
