@@ -1,206 +1,287 @@
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
 import re
+from typing import Optional
 
 app = FastAPI()
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-class VoiceRequest(BaseModel):
+class VoiceReq(BaseModel):
     text: str
 
-# BUFOR SYSTEMU 4.6
-current = {
-    "ticker": None,
-    "interval": None,
-    "time": None,
-    "open": None,
-    "high": None,
-    "low": None,
-    "close": None,
-    "ma20": None,
-    "dema9": None,
-    "rsi": None,
-    "volume": None
-}
+class VoiceResp(BaseModel):
+    ticker: Optional[str] = None
+    interval: Optional[str] = None
+    time: Optional[str] = None
+    open: Optional[float] = None
+    low: Optional[float] = None
+    high: Optional[float] = None
+    close: Optional[float] = None
+    ma20: Optional[float] = None
+    dema9: Optional[float] = None
+    rsi: Optional[float] = None
+    volume: Optional[float] = None
+    signal: Optional[str] = None
+    widełki: Optional[str] = None
+    tp: Optional[str] = None
+    comment: Optional[str] = None
 
-BAD_WORDS = {
-    "o","l","h","c",
-    "ma","ma20","dema","dema9",
-    "rsi","wolumen",
-    "m1","m5","m15","m30","h1","h4","d1","w1"
-}
+class TomorrowReq(BaseModel):
+    text: str
 
-def norm(x):
+class TomorrowResp(BaseModel):
+    ticker: Optional[str] = None
+    interval: Optional[str] = None
+    good_for_tomorrow: bool = False
+    signal: Optional[str] = None
+    comment: Optional[str] = None
+
+def to_float(x: Optional[str]):
     if not x:
         return None
-    x = x.replace(" ", "").replace(",", ".")
+    x = x.replace(",", ".").replace(" ", "")
     try:
         return float(x)
     except:
         return None
 
-def extract_ticker(text):
-    for w in text.split():
-        w_clean = w.lower()
-        if w_clean in BAD_WORDS:
-            continue
-        if re.fullmatch(r"[A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]+", w_clean):
-            return w.upper()
-    return None
+def extract_num(pattern: str, text: str):
+    m = re.search(pattern, text)
+    return to_float(m.group(1)) if m else None
 
-def parse_piece(text):
+def parse_common(text: str) -> dict:
     t = text.lower()
-    out = {}
 
-    # 🔥 TICKER-LOCK — ticker ustawiasz raz, nigdy się nie zmienia
-    if current["ticker"] is None:
-        tick = extract_ticker(text)
-        if tick:
-            out["ticker"] = tick
+    ticker = None
+    for tk in ["kghm","orlen","pzu","pko","peo","mbank","jsw","cd projekt","allegro","dino","lpp","xtb"]:
+        if tk in t:
+            ticker = tk.upper()
 
-    # GODZINA
-    m = re.search(r"\b(\d{1,2}:\d{2})\b", t)
+    interval = "M15"
+    for iv in ["m1","m5","m15","m30","h1","h4","d1"]:
+        if iv in t:
+            interval = iv.upper()
+
+    time = None
+    m = re.search(r"(\d{1,2}[:\.]\d{2})", t)
     if m:
-        out["time"] = m.group(1)
+        time = m.group(1).replace(".", ":")
 
-    # 🔥 FONETYCZNA + PEŁNA KOREKCJA O / L / H / C / OPEN / HIGH / LOW / CENA
+    O = extract_num(r"o\s*([\d\.,]+)", t)
+    L = extract_num(r"l\s*([\d\.,]+)", t)
+    H = extract_num(r"h\s*([\d\.,]+)", t)
+    C = extract_num(r"c\s*([\d\.,]+)", t)
+    MA20 = extract_num(r"ma20\s*([\d\.,]+)", t)
+    DEMA9 = extract_num(r"dema9\s*([\d\.,]+)", t) or extract_num(r"bema9\s*([\d\.,]+)", t)
+    RSI = extract_num(r"rsi\s*([\d\.,]+)", t)
+    VOL = extract_num(r"wolumen\s*([\d\.,]+)", t)
 
-    # --- OPEN ---
-    m = re.search(r"\b(o|oh|ou|oo|open)\s+([\d\., ]+)", t)
-    if m:
-        out["open"] = norm(m.group(2))
+    return {
+        "ticker": ticker,
+        "interval": interval,
+        "time": time,
+        "open": O,
+        "low": L,
+        "high": H,
+        "close": C,
+        "ma20": MA20,
+        "dema9": DEMA9,
+        "rsi": RSI,
+        "volume": VOL,
+    }
 
-    # --- LOW ---
-    m = re.search(r"\b(l|el|al|ł|elle|low)\s+([\d\., ]+)", t)
-    if m:
-        out["low"] = norm(m.group(2))
-
-    # --- HIGH ---
-    m = re.search(r"\b(h|ha|he|hi|high)\s+([\d\., ]+)", t)
-    if m:
-        out["high"] = norm(m.group(2))
-
-    # --- CLOSE ---
-    m = re.search(r"\b(c|ce|se|si|ci|see|cena)\s+([\d\., ]+)", t)
-    if m:
-        out["close"] = norm(m.group(2))
-
-    # BLOKADA hi185 → HIGH
-    m = re.search(r"\bhi\s*([\d\., ]+)", t)
-    if m:
-        out["high"] = norm(m.group(1))
-
-    # MA20
-    m = re.search(r"\bma\s*([\d\., ]+)", t)
-    if m:
-        out["ma20"] = norm(m.group(1))
-
-    m = re.search(r"ma20\s*([\d\., ]+)", t)
-    if m:
-        out["ma20"] = norm(m.group(1))
-
-    # DEMA9
-    m = re.search(r"\bdema\s*([\d\., ]+)", t)
-    if m:
-        out["dema9"] = norm(m.group(1))
-
-    m = re.search(r"dema9\s*([\d\., ]+)", t)
-    if m:
-        out["dema9"] = norm(m.group(1))
-
-    # RSI
-    m = re.search(r"rsi\s*([\d\., ]+)", t)
-    if m:
-        out["rsi"] = norm(m.group(1))
-
-    # WOLUMEN
-    m = re.search(r"wolumen\s*([\d\., ]+)", t)
-    if m:
-        out["volume"] = norm(m.group(1))
-
-    # 🔥 AUTOKOREKTA INTERWAŁÓW (M ↔ H + słowne)
-
-    # bezpośrednie Mxx
-    if "m15" in t or "m 15" in t:
-        out["interval"] = "M15"
-    elif "m5" in t or "m 5" in t:
-        out["interval"] = "M5"
-    elif "m1" in t or "m 1" in t:
-        out["interval"] = "M1"
-    elif "m30" in t or "m 30" in t:
-        out["interval"] = "M30"
-
-    # Chrome robi h1/h5/h15/h30 zamiast M
-    if re.search(r"\bh1\b", t) and not out.get("interval"):
-        out["interval"] = "M1"
-    if re.search(r"\bh5\b", t) and not out.get("interval"):
-        out["interval"] = "M5"
-    if re.search(r"\bh15\b", t) and not out.get("interval"):
-        out["interval"] = "M15"
-    if re.search(r"\bh30\b", t) and not out.get("interval"):
-        out["interval"] = "M30"
-
-    # słowne interwały
-    if "jedna minuta" in t or "minuta" in t:
-        out["interval"] = "M1"
-    if "pięć minut" in t:
-        out["interval"] = "M5"
-    if "piętnaście minut" in t:
-        out["interval"] = "M15"
-    if "trzydzieści minut" in t:
-        out["interval"] = "M30"
-
-    return out
-
-def system_45_logic(d):
-    o = d.get("open")
-    c = d.get("close")
-    ma = d.get("ma20")
-    de = d.get("dema9")
-
-    if None in (o, c, ma, de):
-        return None, "Brak danych do sygnału."
-
-    if c > ma and c > de:
-        return "BUY", "Cena powyżej MA20 i DEMA9 — trend wzrostowy."
-    elif c < ma and c < de:
-        return "SELL", "Cena poniżej MA20 i DEMA9 — trend spadkowy."
+def calc_widelki(low, high, signal: str | None):
+    if low is None or high is None:
+        return None
+    r = high - low
+    if signal == "SELL":
+        dol = high - r * 0.35
+        gor = high - r * 0.20
     else:
-        return "CZEKAJ", "Brak wyraźnego sygnału."
+        dol = low + r * 0.20
+        gor = low + r * 0.35
+    return f"{dol:.2f}–{gor:.2f}"
 
-def is_complete(d):
-    return all([
-        d["ticker"], d["interval"], d["time"],
-        d["open"], d["high"], d["low"], d["close"],
-        d["ma20"], d["dema9"], d["rsi"], d["volume"]
-    ])
+def calc_tp(low, high, close, signal: str | None):
+    if low is None or high is None or close is None:
+        return None
+    r = abs(high - low)
+    if signal == "SELL":
+        tp1 = close - r * 0.5
+        tp2 = close - r * 1.0
+        tp3 = close - r * 1.5
+    else:
+        tp1 = close + r * 0.5
+        tp2 = close + r * 1.0
+        tp3 = close + r * 1.5
+    return f"{tp1:.2f} / {tp2:.2f} / {tp3:.2f}"
 
-@app.post("/voice-parse")
-def voice_parse(req: VoiceRequest):
-    global current
+def signal_multi_tf(d: dict) -> tuple[str, str]:
+    C = d["close"]
+    L = d["low"]
+    H = d["high"]
+    MA20 = d["ma20"]
+    DEMA9 = d["dema9"]
+    RSI = d["rsi"]
+    VOL = d["volume"]
+    interval = d["interval"]
 
-    piece = parse_piece(req.text)
+    if C is None or L is None or H is None:
+        return "CZEKAJ", "Brak danych."
 
-    for k, v in piece.items():
-        if v is not None:
-            current[k] = v
+    dol = L + (H - L) * 0.20
+    gor = L + (H - L) * 0.35
 
-    if is_complete(current):
-        signal, comment = system_45_logic(current)
-        out = current.copy()
-        out["signal"] = signal
-        out["comment"] = comment
+    momentum = "SŁABE"
+    bias = "DOWN"
+    rsiPower = "SŁABE"
+    volPower = "SŁABE"
 
-        current = {k: None for k in current}
-        return out
+    if DEMA9 is not None and C > DEMA9:
+        momentum = "MOCNE"
+    if MA20 is not None and C > MA20:
+        bias = "UP"
+    if RSI is not None:
+        if RSI >= 55:
+            rsiPower = "MOCNE"
+        elif RSI >= 50:
+            rsiPower = "OK"
+    if VOL is not None:
+        if VOL >= 1500:
+            volPower = "MOCNE"
+        elif VOL >= 500:
+            volPower = "OK"
 
-    return {**current, "signal": None, "comment": "Czekam na brakujące dane…"}
+    s = "CZEKAJ"
+
+    # M5 — bardziej czułe na momentum
+    if interval == "M5":
+        if dol <= C <= gor and momentum == "MOCNE" and rsiPower != "SŁABE":
+            s = "BUY"
+        elif dol <= C <= gor and momentum == "SŁABE":
+            s = "PRAWIE BUY"
+        elif C < dol:
+            s = "CZEKAJ DO"
+    # M15 — główne widełki
+    elif interval == "M15":
+        if dol <= C <= gor and momentum == "MOCNE" and bias == "UP" and rsiPower != "SŁABE" and volPower != "SŁABE":
+            s = "BUY"
+        elif dol <= C <= gor and (momentum == "SŁABE" or rsiPower == "SŁABE"):
+            s = "PRAWIE BUY"
+        elif C < dol:
+            s = "CZEKAJ DO"
+        elif C > gor:
+            s = "CZEKAJ"
+    # H1 — bias dnia, bardziej ostrożny
+    elif interval == "H1":
+        if bias == "UP" and momentum == "MOCNE" and C > dol and C < gor:
+            s = "BUY"
+        elif bias == "UP" and C < dol:
+            s = "CZEKAJ DO"
+        else:
+            s = "CZEKAJ"
+    # D1 — kierunek dnia, raczej komentarz niż agresywny sygnał
+    elif interval == "D1":
+        if bias == "UP" and momentum == "MOCNE":
+            s = "BUY"
+        else:
+            s = "CZEKAJ"
+
+    # reset logic (uniwersalne)
+    if C < dol * 0.995 and momentum == "SŁABE" and rsiPower == "SŁABE":
+        s = "UWAGA RESET"
+    if C < L and momentum == "SŁABE" and rsiPower == "SŁABE":
+        s = "RESET"
+
+    comment = f"TF={interval}, Momentum={momentum}, Bias={bias}, RSI={rsiPower}, VOL={volPower}"
+    return s, comment
+
+@app.post("/voice-parse", response_model=VoiceResp)
+def voice_parse(req: VoiceReq):
+    d = parse_common(req.text)
+    sig, comment = signal_multi_tf(d)
+    wid = calc_widelki(d["low"], d["high"], sig)
+    tp = calc_tp(d["low"], d["high"], d["close"], sig)
+
+    return VoiceResp(
+        ticker=d["ticker"],
+        interval=d["interval"],
+        time=d["time"],
+        open=d["open"],
+        low=d["low"],
+        high=d["high"],
+        close=d["close"],
+        ma20=d["ma20"],
+        dema9=d["dema9"],
+        rsi=d["rsi"],
+        volume=d["volume"],
+        signal=sig,
+        widełki=wid,
+        tp=tp,
+        comment=comment
+    )
+
+# ============================
+# NA JUTRO — VWAP ONLY
+# ============================
+
+def parse_tomorrow(text: str) -> dict:
+    d = parse_common(text)
+    t = text.lower()
+    vwap = extract_num(r"vwap\s*([\d\.,]+)", t)
+    d["vwap"] = vwap
+    return d
+
+def logic_tomorrow(d: dict) -> tuple[bool, str, str]:
+    ticker = d["ticker"] or "???"
+    interval = "D1/H1"
+    C = d["close"]
+    MA20 = d["ma20"]
+    DEMA9 = d["dema9"]
+    RSI = d["rsi"]
+    VOL = d["volume"]
+    VWAP = d.get("vwap")
+
+    score = 0
+    parts = []
+
+    if C is not None and MA20 is not None and C > MA20:
+        score += 1
+        parts.append("D1: C > MA20 (trend UP)")
+    if DEMA9 is not None and MA20 is not None and DEMA9 > MA20:
+        score += 1
+        parts.append("D1: DEMA9 > MA20 (momentum UP)")
+    if RSI is not None and 45 <= RSI <= 70:
+        score += 1
+        parts.append("RSI w zdrowym zakresie (45–70)")
+    if VOL is not None and VOL >= 1000:
+        score += 1
+        parts.append("Wolumen powyżej średniej")
+    if VWAP is not None and C is not None and C > VWAP:
+        score += 1
+        parts.append("H1: C > VWAP (bias UP)")
+
+    good = score >= 3
+    sig = "BUY" if good else "CZEKAJ"
+    comment = "; ".join(parts) if parts else "Brak mocnych argumentów."
+
+    return good, sig, comment
+
+@app.post("/parse", response_model=TomorrowResp)
+def parse_tomorrow_endpoint(req: TomorrowReq):
+    d = parse_tomorrow(req.text)
+    good, sig, comment = logic_tomorrow(d)
+    return TomorrowResp(
+        ticker=d["ticker"],
+        interval="D1/H1",
+        good_for_tomorrow=good,
+        signal=sig,
+        comment=comment
+    )
