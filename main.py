@@ -1,12 +1,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Dict, Optional
-import uvicorn
+import re
 
 app = FastAPI()
 
-# ====== CORS ======
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,301 +14,251 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ====== MODELE ======
-
 class VoiceRequest(BaseModel):
     text: str
 
-
-# ====== POMOCNICZE ======
-
-def parse_number(tokens, i):
-    """Inteligentny parser liczb."""
-    if i >= len(tokens):
-        return None, i
-
-    t = tokens[i].replace(",", ".")
-    if t.replace(".", "").isdigit():
-        return float(t), i + 1
-
-    return None, i + 1
-
-
-def empty_row():
+# ============================
+#  PAMIĘĆ 6.5 PRO — MULTI‑TICKER
+# ============================
+def empty_state():
     return {
+        "ticker": None,
+        "interval": None,
+        "time": None,
         "open": None,
-        "low": None,
         "high": None,
+        "low": None,
         "close": None,
         "ma20": None,
         "dema9": None,
         "rsi": None,
-        "vwap": None,
         "volume": None,
+        "signal": None,
+        "comment": "Czekam na dane…",
     }
 
-
-# ============================================================
-#  LIVE — ANALIZA TERAZ (M5/M15/H1)
-# ============================================================
-
-def analyze_live(row: Dict) -> Dict:
-    """Sygnały LIVE 4.5+ uproszczone."""
-    close = row.get("close")
-    ma20 = row.get("ma20")
-    dema9 = row.get("dema9")
-    rsi = row.get("rsi")
-
-    if not close or not ma20 or not dema9 or not rsi:
-        return {"signal": "CZEKAJ", "comment": "Brak pełnych danych."}
-
-    if close > ma20 and close > dema9 and 55 <= rsi <= 70:
-        return {"signal": "BUY", "comment": "Silny sygnał BUY."}
-
-    if close > ma20 and 50 <= rsi < 55:
-        return {"signal": "PRAWIE BUY", "comment": "PRAWIE BUY — brakuje trochę RSI."}
-
-    if rsi > 75:
-        return {"signal": "RESET", "comment": "Przegrzanie — RESET."}
-
-    return {"signal": "CZEKAJ", "comment": "Warunki nie są idealne."}
+memory = {}  # ticker -> state dict
 
 
-def parse_live(text: str) -> Dict:
-    tokens = text.lower().split()
+BAD_WORDS = {
+    "o","l","h","c",
+    "ma","ma20","dema","dema9",
+    "rsi","wolumen",
+    "m1","m5","m15","m30","h1","h4","d1","w1"
+}
 
-    ticker = None
-    interval = None
-    time_str = None
-    row = empty_row()
+def norm(x):
+    if not x:
+        return None
+    x = x.replace(" ", "").replace(",", ".")
+    try:
+        return float(x)
+    except:
+        return None
 
-    i = 0
-    while i < len(tokens):
-        t = tokens[i]
-
-        # ticker
-        if ticker is None and t not in ["m1", "m5", "m15", "m30", "h1"]:
-            if not t.replace(".", "").isdigit():
-                ticker = t.upper()
-                i += 1
-                continue
-
-        # interwał
-        if t in ["m1", "m5", "m15", "m30", "h1"]:
-            interval = t.upper()
-            i += 1
+def extract_ticker(text: str):
+    for w in text.split():
+        w_clean = w.lower()
+        if w_clean in BAD_WORDS:
             continue
+        if re.fullmatch(r"[A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]+", w_clean):
+            return w.upper()
+    return None
 
-        # godzina
-        if ":" in t:
-            time_str = t
-            i += 1
-            continue
+def parse_piece(text: str):
+    t = text.lower()
+    out = {}
 
-        # słowa kluczowe
-        if t == "open":
-            i += 1
-            row["open"], i = parse_number(tokens, i)
-            continue
-        if t == "low":
-            i += 1
-            row["low"], i = parse_number(tokens, i)
-            continue
-        if t == "high":
-            i += 1
-            row["high"], i = parse_number(tokens, i)
-            continue
-        if t in ["close", "entry"]:
-            i += 1
-            row["close"], i = parse_number(tokens, i)
-            continue
-        if t == "ma20":
-            i += 1
-            row["ma20"], i = parse_number(tokens, i)
-            continue
-        if t in ["dema9", "ema9"]:
-            i += 1
-            row["dema9"], i = parse_number(tokens, i)
-            continue
-        if t == "rsi":
-            i += 1
-            row["rsi"], i = parse_number(tokens, i)
-            continue
-        if t in ["wolumen", "volume"]:
-            i += 1
-            vol, i = parse_number(tokens, i)
-            row["volume"] = int(vol) if vol else None
-            continue
+    # TICKER
+    tick = extract_ticker(text)
+    if tick:
+        out["ticker"] = tick
 
-        i += 1
+    # GODZINA
+    m = re.search(r"\b(\d{1,2}:\d{2})\b", t)
+    if m:
+        out["time"] = m.group(1)
 
+    # OPEN
+    m = re.search(r"\b(o|oh|ou|oo|open)\s+([\d\., ]+)", t)
+    if m:
+        out["open"] = norm(m.group(2))
+
+    # LOW
+    m = re.search(r"\b(l|el|al|ł|elle|low)\s+([\d\., ]+)", t)
+    if m:
+        out["low"] = norm(m.group(2))
+
+    # HIGH
+    m = re.search(r"\b(h|ha|he|hi|high)\s+([\d\., ]+)", t)
+    if m:
+        out["high"] = norm(m.group(2))
+
+    # CLOSE
+    m = re.search(r"\b(c|ce|se|si|ci|see|cena)\s+([\d\., ]+)", t)
+    if m:
+        out["close"] = norm(m.group(2))
+
+    # hi 185 → HIGH
+    m = re.search(r"\bhi\s*([\d\., ]+)", t)
+    if m:
+        out["high"] = norm(m.group(1))
+
+    # MA20
+    m = re.search(r"\bma\s*([\d\., ]+)", t)
+    if m:
+        out["ma20"] = norm(m.group(1))
+    m = re.search(r"ma20\s*([\d\., ]+)", t)
+    if m:
+        out["ma20"] = norm(m.group(1))
+
+    # DEMA9
+    m = re.search(r"\bdema\s*([\d\., ]+)", t)
+    if m:
+        out["dema9"] = norm(m.group(1))
+    m = re.search(r"dema9\s*([\d\., ]+)", t)
+    if m:
+        out["dema9"] = norm(m.group(1))
+
+    # RSI
+    m = re.search(r"rsi\s*([\d\., ]+)", t)
+    if m:
+        out["rsi"] = norm(m.group(1))
+
+    # WOLUMEN
+    m = re.search(r"wolumen\s*([\d\., ]+)", t)
+    if m:
+        out["volume"] = norm(m.group(1))
+
+    # INTERWAŁY
+    if "m15" in t or "m 15" in t:
+        out["interval"] = "M15"
+    elif "m5" in t or "m 5" in t:
+        out["interval"] = "M5"
+    elif "m1" in t or "m 1" in t:
+        out["interval"] = "M1"
+    elif "m30" in t or "m 30" in t:
+        out["interval"] = "M30"
+
+    # Chrome h1/h5/h15/h30
+    if re.search(r"\bh1\b", t) and not out.get("interval"):
+        out["interval"] = "M1"
+    if re.search(r"\bh5\b", t) and not out.get("interval"):
+        out["interval"] = "M5"
+    if re.search(r"\bh15\b", t) and not out.get("interval"):
+        out["interval"] = "M15"
+    if re.search(r"\bh30\b", t) and not out.get("interval"):
+        out["interval"] = "M30"
+
+    # słowne
+    if "jedna minuta" in t or "minuta" in t:
+        out["interval"] = "M1"
+    if "pięć minut" in t:
+        out["interval"] = "M5"
+    if "piętnaście minut" in t:
+        out["interval"] = "M15"
+    if "trzydzieści minut" in t:
+        out["interval"] = "M30"
+
+    return out
+
+def system_45_logic(d):
+    o = d.get("open")
+    c = d.get("close")
+    ma = d.get("ma20")
+    de = d.get("dema9")
+
+    if None in (o, c, ma, de):
+        return None, "Brak kompletu danych do sygnału."
+
+    if c > ma and c > de:
+        return "BUY", "Cena powyżej MA20 i DEMA9 — trend wzrostowy."
+    elif c < ma and c < de:
+        return "SELL", "Cena poniżej MA20 i DEMA9 — trend spadkowy."
+    else:
+        return "CZEKAJ", "Brak wyraźnego sygnału (strefa przejściowa)."
+
+def is_complete(d):
+    return all([
+        d.get("ticker"),
+        d.get("interval"),
+        d.get("time"),
+        d.get("open") is not None,
+        d.get("high") is not None,
+        d.get("low") is not None,
+        d.get("close") is not None,
+        d.get("ma20") is not None,
+        d.get("dema9") is not None,
+        d.get("rsi") is not None,
+        d.get("volume") is not None,
+    ])
+
+# ============================
+#  ENDPOINT 6.5 PRO
+# ============================
+@app.post("/voice-parse")
+def voice_parse(req: VoiceRequest):
+    piece = parse_piece(req.text)
+
+    ticker = piece.get("ticker")
     if not ticker:
-        ticker = "UNKNOWN"
-
-    sig = analyze_live(row)
-
-    return {
-        "ticker": ticker,
-        "interval": interval or "M15",
-        "time": time_str or "--:--",
-        "row": row,
-        "signal": sig["signal"],
-        "comment": sig["comment"]
-    }
-
-
-# ============================================================
-#  NA JUTRO — ANALIZA D1/H1
-# ============================================================
-
-def analyze_tomorrow(ticker: str, d1: Dict, h1: Dict) -> Dict:
-    """Analiza D1/H1 — wynik TAK/NIE + widełki + TP."""
-    if not d1:
+        # brak tickera → frontend 6.5 to zignoruje
         return {
-            "ticker": ticker,
-            "signal": "NIE",
-            "comment": "Brak danych D1.",
-            "widełki": "",
-            "tp": "",
-            "d1": d1,
-            "h1": h1
+            "ticker": None,
+            "interval": None,
+            "time": None,
+            "open": None,
+            "high": None,
+            "low": None,
+            "close": None,
+            "ma20": None,
+            "dema9": None,
+            "rsi": None,
+            "volume": None,
+            "signal": None,
+            "comment": "Brak tickera — podaj nazwę spółki."
         }
 
-    close = d1.get("close")
-    ma20 = d1.get("ma20")
-    dema9 = d1.get("dema9")
-    rsi = d1.get("rsi")
+    # stan dla danego tickera
+    state = memory.get(ticker)
+    if state is None:
+        state = empty_state()
+        state["ticker"] = ticker
+        memory[ticker] = state
 
-    signal = "NIE"
-    comment = "D1 nie spełnia warunków."
+    # aktualizacja stanu
+    if piece.get("interval"):
+        state["interval"] = piece["interval"]
+    if piece.get("time"):
+        state["time"] = piece["time"]
 
-    if close and ma20 and dema9 and rsi:
-        if close > ma20 and close > dema9 and 50 <= rsi <= 70:
-            signal = "TAK"
-            comment = "D1 OK — warto obserwować jutro."
+    for key in ["open","high","low","close","ma20","dema9","rsi","volume"]:
+        if piece.get(key) is not None:
+            state[key] = piece[key]
 
-    # filtr H1
-    if h1 and h1.get("rsi") and h1["rsi"] < 40:
-        signal = "NIE"
-        comment += " H1 słabe momentum."
+    # logika 4.5+
+    sig, com = system_45_logic(state)
+    if sig:
+        state["signal"] = sig
+        state["comment"] = com
+    else:
+        state["comment"] = "Czekam na brakujące dane…"
 
-    # widełki + TP
-    widełki = ""
-    tp = ""
-
-    if d1.get("low") and d1.get("high"):
-        low = d1["low"]
-        high = d1["high"]
-        widełki = f"{low} - {high}"
-
-        tp1 = round(high * 1.01, 2)
-        tp2 = round(high * 1.02, 2)
-        tp3 = round(high * 1.03, 2)
-        tp = f"{tp1}/{tp2}/{tp3}"
-
-    return {
-        "ticker": ticker,
-        "signal": signal,
-        "comment": comment,
-        "widełki": widełki,
-        "tp": tp,
-        "d1": d1,
-        "h1": h1
+    # niczego nie resetujemy — multi‑ticker trzyma kontekst
+    out = {
+        "ticker": state["ticker"],
+        "interval": state["interval"],
+        "time": state["time"],
+        "open": state["open"],
+        "high": state["high"],
+        "low": state["low"],
+        "close": state["close"],
+        "ma20": state["ma20"],
+        "dema9": state["dema9"],
+        "rsi": state["rsi"],
+        "volume": state["volume"],
+        "signal": state["signal"],
+        "comment": state["comment"],
     }
 
-
-def parse_tomorrow(text: str) -> Dict:
-    tokens = text.lower().split()
-
-    ticker = None
-    d1 = empty_row()
-    h1 = empty_row()
-    mode = None  # "d1" albo "h1"
-
-    i = 0
-    while i < len(tokens):
-        t = tokens[i]
-
-        if ticker is None and t not in ["d1", "h1"]:
-            if not t.replace(".", "").isdigit():
-                ticker = t.upper()
-                i += 1
-                continue
-
-        if t == "d1":
-            mode = "d1"
-            i += 1
-            continue
-
-        if t == "h1":
-            mode = "h1"
-            i += 1
-            continue
-
-        target = d1 if mode == "d1" else h1 if mode == "h1" else None
-        if not target:
-            i += 1
-            continue
-
-        if t == "open":
-            i += 1
-            target["open"], i = parse_number(tokens, i)
-            continue
-        if t == "low":
-            i += 1
-            target["low"], i = parse_number(tokens, i)
-            continue
-        if t == "high":
-            i += 1
-            target["high"], i = parse_number(tokens, i)
-            continue
-        if t == "close":
-            i += 1
-            target["close"], i = parse_number(tokens, i)
-            continue
-        if t == "ma20":
-            i += 1
-            target["ma20"], i = parse_number(tokens, i)
-            continue
-        if t in ["dema9", "ema9"]:
-            i += 1
-            target["dema9"], i = parse_number(tokens, i)
-            continue
-        if t == "rsi":
-            i += 1
-            target["rsi"], i = parse_number(tokens, i)
-            continue
-        if t in ["wolumen", "volume"]:
-            i += 1
-            vol, i = parse_number(tokens, i)
-            target["volume"] = int(vol) if vol else None
-            continue
-
-        i += 1
-
-    if not ticker:
-        ticker = "UNKNOWN"
-
-    return analyze_tomorrow(ticker, d1, h1)
-
-
-# ============================================================
-#  ENDPOINTY
-# ============================================================
-
-@app.post("/voice-parse")
-def live(req: VoiceRequest):
-    return parse_live(req.text)
-
-
-@app.post("/parse")
-def tomorrow(req: VoiceRequest):
-    return parse_tomorrow(req.text)
-
-
-# ============================================================
-#  URUCHOMIENIE
-# ============================================================
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    return out
