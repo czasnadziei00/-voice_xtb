@@ -16,6 +16,9 @@ app.add_middleware(
 class VoiceRequest(BaseModel):
     text: str
 
+class DeleteRequest(BaseModel):
+    ticker: str
+
 def empty_state():
     return {
         "ticker": None,
@@ -39,7 +42,7 @@ memory = {}
 BAD_WORDS = {
     "o","l","h","c",
     "ma","ma20","dema","dema9",
-    "rsi","wolumen","entry",
+    "rsi","wolumen","entry","usuń","usun",
     "m1","m5","m15","m30","h1","h4","d1","w1"
 }
 
@@ -64,6 +67,9 @@ def extract_ticker(text: str):
 def parse_piece(text: str, existing_ticker=None):
     t = text.lower()
     out = {}
+
+    if "usuń" in t or "usun" in t:
+        out["delete"] = True
 
     if existing_ticker:
         out["ticker"] = existing_ticker
@@ -149,6 +155,11 @@ def voice_parse(req: VoiceRequest):
     piece = parse_piece(req.text, existing_ticker=existing_ticker)
     ticker = piece.get("ticker")
 
+    if piece.get("delete") and ticker:
+        if ticker in memory:
+            del memory[ticker]
+        return {"ticker": ticker, "deleted": True, "comment": f"Usunięto {ticker}"}
+
     if not ticker:
         return {
             "ticker": None,
@@ -195,3 +206,11 @@ def voice_parse(req: VoiceRequest):
             state["comment"] = "Czekam na brakujące dane…"
 
     return state
+
+@app.post("/voice-parse/delete")
+def delete_ticker(req: DeleteRequest):
+    t = req.ticker.upper()
+    if t in memory:
+        del memory[t]
+        return {"status": "deleted", "ticker": t}
+    return {"status": "not_found", "ticker": t}
