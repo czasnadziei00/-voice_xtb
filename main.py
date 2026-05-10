@@ -38,6 +38,7 @@ def empty_state():
     }
 
 memory = {}
+last_ticker = None  # 🔥 globalny aktywny ticker
 
 BAD_WORDS = {
     "o","l","h","c",
@@ -147,17 +148,30 @@ def system_45_logic(d):
 
 @app.post("/voice-parse")
 def voice_parse(req: VoiceRequest):
+    global last_ticker
 
-    temp_ticker = extract_ticker(req.text)
-    state = memory.get(temp_ticker) if temp_ticker else None
-    existing_ticker = state["ticker"] if state else None
+    text = req.text
+    t_low = text.lower()
 
-    piece = parse_piece(req.text, existing_ticker=existing_ticker)
-    ticker = piece.get("ticker")
+    # 1. Spróbuj wyciągnąć nowy ticker z wypowiedzi
+    candidate = extract_ticker(text)
 
+    # 2. Jeśli jest kandydat → traktujemy to jako świadome podanie tickera
+    if candidate:
+        ticker = candidate
+        last_ticker = ticker
+    else:
+        # 3. Brak tickera w tekście → użyj ostatniego aktywnego
+        ticker = last_ticker
+
+    piece = parse_piece(text, existing_ticker=ticker)
+
+    # obsługa "usuń" (głosowe)
     if piece.get("delete") and ticker:
         if ticker in memory:
             del memory[ticker]
+        if last_ticker == ticker:
+            last_ticker = None
         return {"ticker": ticker, "deleted": True, "comment": f"Usunięto {ticker}"}
 
     if not ticker:
@@ -209,8 +223,11 @@ def voice_parse(req: VoiceRequest):
 
 @app.post("/voice-parse/delete")
 def delete_ticker(req: DeleteRequest):
+    global last_ticker
     t = req.ticker.upper()
     if t in memory:
         del memory[t]
+        if last_ticker == t:
+            last_ticker = None
         return {"status": "deleted", "ticker": t}
     return {"status": "not_found", "ticker": t}
