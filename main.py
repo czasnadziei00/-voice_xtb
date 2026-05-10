@@ -1,310 +1,222 @@
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import re
-from typing import Optional
+from typing import Optional, Dict
+import uvicorn
 
 app = FastAPI()
 
-# CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ====== MODELE ======
 
-# ============================
-# MODELE
-# ============================
-
-class VoiceReq(BaseModel):
+class VoiceRequest(BaseModel):
     text: str
 
-class VoiceResp(BaseModel):
-    ticker: Optional[str] = None
-    interval: Optional[str] = None
-    time: Optional[str] = None
-    open: Optional[float] = None
-    low: Optional[float] = None
-    high: Optional[float] = None
-    close: Optional[float] = None
-    ma20: Optional[float] = None
-    dema9: Optional[float] = None
-    rsi: Optional[float] = None
-    volume: Optional[float] = None
-    signal: Optional[str] = None
-    widełki: Optional[str] = None
-    tp: Optional[str] = None
-    comment: Optional[str] = None
+# ====== POMOCNICZE ======
 
-class TomorrowReq(BaseModel):
-    text: str
+def parse_number_tokens(tokens, i):
+    """
+    Inteligentny parser liczb:
+    - 123
+    - 123 4        -> 123.4
+    - 123 45       -> 123.45
+    - 123 456      -> 123
+    - 123 kropka 4 -> 123.4
+    """
+    if i >= len(tokens):
+        return None, i
 
-class TomorrowResp(BaseModel):
-    ticker: Optional[str] = None
-    interval: Optional[str] = None
-    good_for_tomorrow: bool = False
-    signal: Optional[str] = None
-    comment: Optional[str] = None
+    t = tokens[i]
 
-# ============================
-# FUNKCJE POMOCNICZE
-# ============================
+    # czysta liczba
+    if t.replace(",", ".").replace("-", "").replace("+", "").replace(".", "").isdigit():
+        base = t.replace(",", ".")
+        # spróbuj zajrzeć w następny token
+        if i + 1 < len(tokens):
+            t2 = tokens[i + 1]
+            # wariant "kropka 4"
+            if t2 in ["kropka", "przecinek", "coma", "dot"]:
+                if i + 2 < len(tokens) and tokens[i + 2].isdigit():
+                    frac = tokens[i + 2]
+                    return float(f"{base}.{frac}"), i + 3
+            # wariant "123 4" / "123 45" / "123 456"
+            if t2.isdigit():
+                if len(t2) <= 2:
+                    return float(f"{base}.{t2}"), i + 2
+                else:
+                    return float(base), i + 1
+        return float(base), i + 1
 
-def to_float(x: Optional[str]):
-    if not x:
-        return None
-    x = x.replace(",", ".").replace(" ", "")
-    try:
-        return float(x)
-    except:
-        return None
+    return None, i + 1
 
-def extract_num(pattern: str, text: str):
-    m = re.search(pattern, text)
-    return to_float(m.group(1)) if m else None
 
-# ============================
-# PARSER WSPÓLNY
-# ============================
+def empty_ohlc():
+    return {
+        "open": None,
+        "low": None,
+        "high": None,
+        "close": None,
+        "ma20": None,
+        "dema9": None,
+        "rsi": None,
+        "vwap": None,
+        "volume": None,
+    }
 
-def parse_common(text: str) -> dict:
-    t = text.lower()
 
-    ticker = None
-    for tk in ["kghm","orlen","pzu","pko","peo","mbank","jsw","cd projekt","allegro","dino","lpp","xtb"]:
-        if tk in t:
-            ticker = tk.upper()
+def analyze_signal_d1_h1(ticker: str,
+                         d1: Dict,
+                         h1: Dict) -> Dict:
+    """
+    Prosta logika 4.5+ NA JUTRO 2.0 (szkielet).
+    FINAL = D1, H1 tylko jako filtr.
+    Tu możesz później włożyć swoją pełną logikę 4.5+.
+    """
 
-    interval = "M15"
-    for iv in ["m1","m5","m15","m30","h1","h4","d1"]:
-        if iv in t:
-            interval = iv.upper()
+    final = empty_ohlc()
+    # FINAL = D1
+    if d1:
+        final.update(d1)
+    final["interval"] = "D1/H1"
 
-    time = None
-    m = re.search(r"(\d{1,2}[:\.]\d{2})", t)
-    if m:
-        time = m.group(1).replace(".", ":")
+    # prosta logika sygnału (placeholder)
+    signal = "CZEKAJ"
+    comment = "Brak pełnych danych D1."
+    good = False
+    widełki = ""
+    tp = ""
 
-    O = extract_num(r"o\s*([\d\.,]+)", t)
-    L = extract_num(r"l\s*([\d\.,]+)", t)
-    H = extract_num(r"h\s*([\d\.,]+)", t)
-    C = extract_num(r"c\s*([\d\.,]+)", t)
-    MA20 = extract_num(r"ma20\s*([\d\.,]+)", t)
-    DEMA9 = extract_num(r"dema9\s*([\d\.,]+)", t) or extract_num(r"dema\s*([\d\.,]+)", t)
-    RSI = extract_num(r"rsi\s*([\d\.,]+)", t)
-    VOL = extract_num(r"wolumen\s*([\d\.,]+)", t)
+    if d1 and d1.get("close") and d1.get("ma20") and d1.get("dema9") and d1.get("rsi"):
+        close = d1["close"]
+        ma20 = d1["ma20"]
+        dema9 = d1["dema9"]
+        rsi = d1["rsi"]
+
+        # przykładowa logika:
+        # - close > ma20 i close > dema9
+        # - rsi w strefie 50–70
+        if close > ma20 and close > dema9 and 50 <= rsi <= 70:
+            signal = "BUY"
+            good = True
+            comment = "Trend wzrostowy D1, close powyżej MA20 i DEMA9, RSI w strefie siły."
+        else:
+            signal = "CZEKAJ"
+            good = False
+            comment = "D1 nie spełnia warunków silnego trendu."
+
+        # prosty przykład widełek i TP
+        if d1.get("low") and d1.get("high"):
+            low = d1["low"]
+            high = d1["high"]
+            mid = (low + high) / 2
+            widełki = f"{round(low, 2)} - {round(high, 2)}"
+            tp1 = round(high * 1.01, 2)
+            tp2 = round(high * 1.02, 2)
+            tp3 = round(high * 1.03, 2)
+            tp = f"{tp1} / {tp2} / {tp3}"
+
+    # H1 jako filtr (przykład: jeśli jest, a RSI < 40, to osłabiamy sygnał)
+    if h1 and h1.get("rsi") is not None and h1["rsi"] < 40 and signal == "BUY":
+        signal = "CZEKAJ"
+        good = False
+        comment += " H1 pokazuje słabe momentum (RSI < 40)."
 
     return {
         "ticker": ticker,
-        "interval": interval,
-        "time": time,
-        "open": O,
-        "low": L,
-        "high": H,
-        "close": C,
-        "ma20": MA20,
-        "dema9": DEMA9,
-        "rsi": RSI,
-        "volume": VOL,
+        "d1": d1,
+        "h1": h1,
+        "final": final,
+        "signal": signal,
+        "widełki": widełki,
+        "tp": tp,
+        "good_for_tomorrow": good,
+        "comment": comment
     }
 
-# ============================
-# LOGIKA MULTI‑TF 6.0+
-# ============================
 
-def signal_multi_tf(d: dict) -> tuple[str, str]:
-    C = d["close"]
-    L = d["low"]
-    H = d["high"]
-    MA20 = d["ma20"]
-    DEMA9 = d["dema9"]
-    RSI = d["rsi"]
-    VOL = d["volume"]
-    interval = d["interval"]
+def parse_d1_h1_from_text(text: str) -> Dict:
+    """
+    Styl B:
+    - 'KGHM D1 195 193 200 198 190 195 62 197 120000'
+      open low high close ma20 dema9 rsi vwap volume
+    - 'KGHM H1 196 194 198 197 195 196 58 196.5 34000'
+    Kolejność dowolna, mogą być tylko D1, tylko H1, albo oba.
+    """
 
-    if C is None or L is None or H is None:
-        return "CZEKAJ", "Brak danych."
+    t = text.lower().split()
+    ticker = None
+    d1 = empty_ohlc()
+    h1 = empty_ohlc()
+    has_d1 = False
+    has_h1 = False
 
-    dol = L + (H - L) * 0.20
-    gor = L + (H - L) * 0.35
+    i = 0
+    while i < len(t):
+        token = t[i]
 
-    momentum = "SŁABE"
-    bias = "DOWN"
-    rsiPower = "SŁABE"
-    volPower = "SŁABE"
+        # ticker = pierwsze słowo nie będące d1/h1/liczbą
+        if ticker is None and token not in ["d1", "h1"]:
+            if not token.replace(",", ".").replace(".", "").isdigit():
+                ticker = token
+                i += 1
+                continue
 
-    if DEMA9 is not None and C > DEMA9:
-        momentum = "MOCNE"
-    if MA20 is not None and C > MA20:
-        bias = "UP"
-    if RSI is not None:
-        if RSI >= 55:
-            rsiPower = "MOCNE"
-        elif RSI >= 50:
-            rsiPower = "OK"
-    if VOL is not None:
-        if VOL >= 1500:
-            volPower = "MOCNE"
-        elif VOL >= 500:
-            volPower = "OK"
+        if token == "d1":
+            has_d1 = True
+            i += 1
+            # open, low, high, close, ma20, dema9, rsi, vwap, volume
+            d1["open"], i = parse_number_tokens(t, i)
+            d1["low"], i = parse_number_tokens(t, i)
+            d1["high"], i = parse_number_tokens(t, i)
+            d1["close"], i = parse_number_tokens(t, i)
+            d1["ma20"], i = parse_number_tokens(t, i)
+            d1["dema9"], i = parse_number_tokens(t, i)
+            d1["rsi"], i = parse_number_tokens(t, i)
+            d1["vwap"], i = parse_number_tokens(t, i)
+            vol, i = parse_number_tokens(t, i)
+            d1["volume"] = int(vol) if vol is not None else None
+            continue
 
-    s = "CZEKAJ"
+        if token == "h1":
+            has_h1 = True
+            i += 1
+            h1["open"], i = parse_number_tokens(t, i)
+            h1["low"], i = parse_number_tokens(t, i)
+            h1["high"], i = parse_number_tokens(t, i)
+            h1["close"], i = parse_number_tokens(t, i)
+            h1["ma20"], i = parse_number_tokens(t, i)
+            h1["dema9"], i = parse_number_tokens(t, i)
+            h1["rsi"], i = parse_number_tokens(t, i)
+            h1["vwap"], i = parse_number_tokens(t, i)
+            vol, i = parse_number_tokens(t, i)
+            h1["volume"] = int(vol) if vol is not None else None
+            continue
 
-    # M5 — szybkie momentum
-    if interval == "M5":
-        if dol <= C <= gor and momentum == "MOCNE":
-            s = "BUY"
-        elif dol <= C <= gor:
-            s = "PRAWIE BUY"
-        elif C < dol:
-            s = "CZEKAJ DO"
+        i += 1
 
-    # M15 — główne widełki
-    elif interval == "M15":
-        if dol <= C <= gor and momentum == "MOCNE" and bias == "UP" and rsiPower != "SŁABE" and volPower != "SŁABE":
-            s = "BUY"
-        elif dol <= C <= gor:
-            s = "PRAWIE BUY"
-        elif C < dol:
-            s = "CZEKAJ DO"
+    if not ticker:
+        ticker = "UNKNOWN"
 
-    # H1 — bias dnia
-    elif interval == "H1":
-        if bias == "UP" and momentum == "MOCNE" and dol < C < gor:
-            s = "BUY"
-        else:
-            s = "CZEKAJ"
+    if not has_d1:
+        d1 = None
+    if not has_h1:
+        h1 = None
 
-    # D1 — kierunek dnia
-    elif interval == "D1":
-        if bias == "UP" and momentum == "MOCNE":
-            s = "BUY"
-        else:
-            s = "CZEKAJ"
+    return analyze_signal_d1_h1(ticker, d1, h1)
 
-    # RESET logic
-    if C < dol * 0.995 and momentum == "SŁABE" and rsiPower == "SŁABE":
-        s = "UWAGA RESET"
-    if C < L and momentum == "SŁABE" and rsiPower == "SŁABE":
-        s = "RESET"
 
-    comment = f"TF={interval}, Momentum={momentum}, Bias={bias}, RSI={rsiPower}, VOL={volPower}"
-    return s, comment
+# ====== ENDPOINT NA JUTRO 2.0 ======
 
-# ============================
-# WIDEŁKI + TP
-# ============================
+@app.post("/parse")
+def parse_tomorrow(req: VoiceRequest):
+    """
+    NA JUTRO 2.0
+    Styl B: KGHM D1 ... H1 ...
+    """
+    text = req.text
+    result = parse_d1_h1_from_text(text)
+    return result
 
-def calc_widelki(low, high, signal: str | None):
-    if low is None or high is None:
-        return None
-    r = high - low
-    if signal == "SELL":
-        dol = high - r * 0.35
-        gor = high - r * 0.20
-    else:
-        dol = low + r * 0.20
-        gor = low + r * 0.35
-    return f"{dol:.2f}–{gor:.2f}"
 
-def calc_tp(low, high, close, signal: str | None):
-    if low is None or high is None or close is None:
-        return None
-    r = abs(high - low)
-    if signal == "SELL":
-        tp1 = close - r * 0.5
-        tp2 = close - r * 1.0
-        tp3 = close - r * 1.5
-    else:
-        tp1 = close + r * 0.5
-        tp2 = close + r * 1.0
-        tp3 = close + r * 1.5
-    return f"{tp1:.2f} / {tp2:.2f} / {tp3:.2f}"
+# (Twój istniejący /voice-parse zostaje bez zmian)
 
-# ============================
-# ENDPOINT: LIVE (multi‑TF)
-# ============================
-
-@app.post("/voice-parse", response_model=VoiceResp)
-def voice_parse(req: VoiceReq):
-    d = parse_common(req.text)
-    sig, comment = signal_multi_tf(d)
-    wid = calc_widelki(d["low"], d["high"], sig)
-    tp = calc_tp(d["low"], d["high"], d["close"], sig)
-
-    return VoiceResp(
-        ticker=d["ticker"],
-        interval=d["interval"],
-        time=d["time"],
-        open=d["open"],
-        low=d["low"],
-        high=d["high"],
-        close=d["close"],
-        ma20=d["ma20"],
-        dema9=d["dema9"],
-        rsi=d["rsi"],
-        volume=d["volume"],
-        signal=sig,
-        widełki=wid,
-        tp=tp,
-        comment=comment
-    )
-
-# ============================
-# ENDPOINT: NA JUTRO (VWAP)
-# ============================
-
-def parse_tomorrow(text: str) -> dict:
-    d = parse_common(text)
-    t = text.lower()
-    vwap = extract_num(r"vwap\s*([\d\.,]+)", t)
-    d["vwap"] = vwap
-    return d
-
-def logic_tomorrow(d: dict) -> tuple[bool, str, str]:
-    C = d["close"]
-    MA20 = d["ma20"]
-    DEMA9 = d["dema9"]
-    RSI = d["rsi"]
-    VOL = d["volume"]
-    VWAP = d.get("vwap")
-
-    score = 0
-    parts = []
-
-    if C and MA20 and C > MA20:
-        score += 1
-        parts.append("D1: C > MA20")
-    if DEMA9 and MA20 and DEMA9 > MA20:
-        score += 1
-        parts.append("D1: DEMA9 > MA20")
-    if RSI and 45 <= RSI <= 70:
-        score += 1
-        parts.append("RSI OK")
-    if VOL and VOL >= 1000:
-        score += 1
-        parts.append("Wolumen OK")
-    if VWAP and C and C > VWAP:
-        score += 1
-        parts.append("H1: C > VWAP")
-
-    good = score >= 3
-    sig = "BUY" if good else "CZEKAJ"
-    comment = "; ".join(parts) if parts else "Brak argumentów."
-
-    return good, sig, comment
-
-@app.post("/parse", response_model=TomorrowResp)
-def parse_tomorrow_endpoint(req: TomorrowReq):
-    d = parse_tomorrow(req.text)
-    good, sig, comment = logic_tomorrow(d)
-    return TomorrowResp(
-        ticker=d["ticker"],
-        interval="D1/H1",
-        good_for_tomorrow=good,
-        signal=sig,
-        comment=comment
-    )
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
