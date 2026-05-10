@@ -1,17 +1,23 @@
 from fastapi import FastAPI
-from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import re
 from typing import Optional
 
 app = FastAPI()
 
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ============================
+# MODELE
+# ============================
 
 class VoiceReq(BaseModel):
     text: str
@@ -43,6 +49,10 @@ class TomorrowResp(BaseModel):
     signal: Optional[str] = None
     comment: Optional[str] = None
 
+# ============================
+# FUNKCJE POMOCNICZE
+# ============================
+
 def to_float(x: Optional[str]):
     if not x:
         return None
@@ -55,6 +65,10 @@ def to_float(x: Optional[str]):
 def extract_num(pattern: str, text: str):
     m = re.search(pattern, text)
     return to_float(m.group(1)) if m else None
+
+# ============================
+# PARSER WSPÓLNY
+# ============================
 
 def parse_common(text: str) -> dict:
     t = text.lower()
@@ -79,7 +93,7 @@ def parse_common(text: str) -> dict:
     H = extract_num(r"h\s*([\d\.,]+)", t)
     C = extract_num(r"c\s*([\d\.,]+)", t)
     MA20 = extract_num(r"ma20\s*([\d\.,]+)", t)
-    DEMA9 = extract_num(r"dema9\s*([\d\.,]+)", t) or extract_num(r"bema9\s*([\d\.,]+)", t)
+    DEMA9 = extract_num(r"dema9\s*([\d\.,]+)", t) or extract_num(r"dema\s*([\d\.,]+)", t)
     RSI = extract_num(r"rsi\s*([\d\.,]+)", t)
     VOL = extract_num(r"wolumen\s*([\d\.,]+)", t)
 
@@ -97,31 +111,9 @@ def parse_common(text: str) -> dict:
         "volume": VOL,
     }
 
-def calc_widelki(low, high, signal: str | None):
-    if low is None or high is None:
-        return None
-    r = high - low
-    if signal == "SELL":
-        dol = high - r * 0.35
-        gor = high - r * 0.20
-    else:
-        dol = low + r * 0.20
-        gor = low + r * 0.35
-    return f"{dol:.2f}–{gor:.2f}"
-
-def calc_tp(low, high, close, signal: str | None):
-    if low is None or high is None or close is None:
-        return None
-    r = abs(high - low)
-    if signal == "SELL":
-        tp1 = close - r * 0.5
-        tp2 = close - r * 1.0
-        tp3 = close - r * 1.5
-    else:
-        tp1 = close + r * 0.5
-        tp2 = close + r * 1.0
-        tp3 = close + r * 1.5
-    return f"{tp1:.2f} / {tp2:.2f} / {tp3:.2f}"
+# ============================
+# LOGIKA MULTI‑TF 6.0+
+# ============================
 
 def signal_multi_tf(d: dict) -> tuple[str, str]:
     C = d["close"]
@@ -161,40 +153,39 @@ def signal_multi_tf(d: dict) -> tuple[str, str]:
 
     s = "CZEKAJ"
 
-    # M5 — bardziej czułe na momentum
+    # M5 — szybkie momentum
     if interval == "M5":
-        if dol <= C <= gor and momentum == "MOCNE" and rsiPower != "SŁABE":
+        if dol <= C <= gor and momentum == "MOCNE":
             s = "BUY"
-        elif dol <= C <= gor and momentum == "SŁABE":
+        elif dol <= C <= gor:
             s = "PRAWIE BUY"
         elif C < dol:
             s = "CZEKAJ DO"
+
     # M15 — główne widełki
     elif interval == "M15":
         if dol <= C <= gor and momentum == "MOCNE" and bias == "UP" and rsiPower != "SŁABE" and volPower != "SŁABE":
             s = "BUY"
-        elif dol <= C <= gor and (momentum == "SŁABE" or rsiPower == "SŁABE"):
+        elif dol <= C <= gor:
             s = "PRAWIE BUY"
         elif C < dol:
             s = "CZEKAJ DO"
-        elif C > gor:
-            s = "CZEKAJ"
-    # H1 — bias dnia, bardziej ostrożny
+
+    # H1 — bias dnia
     elif interval == "H1":
-        if bias == "UP" and momentum == "MOCNE" and C > dol and C < gor:
+        if bias == "UP" and momentum == "MOCNE" and dol < C < gor:
             s = "BUY"
-        elif bias == "UP" and C < dol:
-            s = "CZEKAJ DO"
         else:
             s = "CZEKAJ"
-    # D1 — kierunek dnia, raczej komentarz niż agresywny sygnał
+
+    # D1 — kierunek dnia
     elif interval == "D1":
         if bias == "UP" and momentum == "MOCNE":
             s = "BUY"
         else:
             s = "CZEKAJ"
 
-    # reset logic (uniwersalne)
+    # RESET logic
     if C < dol * 0.995 and momentum == "SŁABE" and rsiPower == "SŁABE":
         s = "UWAGA RESET"
     if C < L and momentum == "SŁABE" and rsiPower == "SŁABE":
@@ -202,6 +193,40 @@ def signal_multi_tf(d: dict) -> tuple[str, str]:
 
     comment = f"TF={interval}, Momentum={momentum}, Bias={bias}, RSI={rsiPower}, VOL={volPower}"
     return s, comment
+
+# ============================
+# WIDEŁKI + TP
+# ============================
+
+def calc_widelki(low, high, signal: str | None):
+    if low is None or high is None:
+        return None
+    r = high - low
+    if signal == "SELL":
+        dol = high - r * 0.35
+        gor = high - r * 0.20
+    else:
+        dol = low + r * 0.20
+        gor = low + r * 0.35
+    return f"{dol:.2f}–{gor:.2f}"
+
+def calc_tp(low, high, close, signal: str | None):
+    if low is None or high is None or close is None:
+        return None
+    r = abs(high - low)
+    if signal == "SELL":
+        tp1 = close - r * 0.5
+        tp2 = close - r * 1.0
+        tp3 = close - r * 1.5
+    else:
+        tp1 = close + r * 0.5
+        tp2 = close + r * 1.0
+        tp3 = close + r * 1.5
+    return f"{tp1:.2f} / {tp2:.2f} / {tp3:.2f}"
+
+# ============================
+# ENDPOINT: LIVE (multi‑TF)
+# ============================
 
 @app.post("/voice-parse", response_model=VoiceResp)
 def voice_parse(req: VoiceReq):
@@ -229,7 +254,7 @@ def voice_parse(req: VoiceReq):
     )
 
 # ============================
-# NA JUTRO — VWAP ONLY
+# ENDPOINT: NA JUTRO (VWAP)
 # ============================
 
 def parse_tomorrow(text: str) -> dict:
@@ -240,8 +265,6 @@ def parse_tomorrow(text: str) -> dict:
     return d
 
 def logic_tomorrow(d: dict) -> tuple[bool, str, str]:
-    ticker = d["ticker"] or "???"
-    interval = "D1/H1"
     C = d["close"]
     MA20 = d["ma20"]
     DEMA9 = d["dema9"]
@@ -252,25 +275,25 @@ def logic_tomorrow(d: dict) -> tuple[bool, str, str]:
     score = 0
     parts = []
 
-    if C is not None and MA20 is not None and C > MA20:
+    if C and MA20 and C > MA20:
         score += 1
-        parts.append("D1: C > MA20 (trend UP)")
-    if DEMA9 is not None and MA20 is not None and DEMA9 > MA20:
+        parts.append("D1: C > MA20")
+    if DEMA9 and MA20 and DEMA9 > MA20:
         score += 1
-        parts.append("D1: DEMA9 > MA20 (momentum UP)")
-    if RSI is not None and 45 <= RSI <= 70:
+        parts.append("D1: DEMA9 > MA20")
+    if RSI and 45 <= RSI <= 70:
         score += 1
-        parts.append("RSI w zdrowym zakresie (45–70)")
-    if VOL is not None and VOL >= 1000:
+        parts.append("RSI OK")
+    if VOL and VOL >= 1000:
         score += 1
-        parts.append("Wolumen powyżej średniej")
-    if VWAP is not None and C is not None and C > VWAP:
+        parts.append("Wolumen OK")
+    if VWAP and C and C > VWAP:
         score += 1
-        parts.append("H1: C > VWAP (bias UP)")
+        parts.append("H1: C > VWAP")
 
     good = score >= 3
     sig = "BUY" if good else "CZEKAJ"
-    comment = "; ".join(parts) if parts else "Brak mocnych argumentów."
+    comment = "; ".join(parts) if parts else "Brak argumentów."
 
     return good, sig, comment
 
