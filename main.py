@@ -6,7 +6,7 @@ import uvicorn
 
 app = FastAPI()
 
-# ====== CORS — MUSI BYĆ NA RENDER ======
+# ====== CORS (Render) ======
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,43 +16,34 @@ app.add_middleware(
 )
 
 # ====== MODELE ======
-
 class VoiceRequest(BaseModel):
     text: str
 
-# ====== POMOCNICZE ======
 
+# ============================================================
+# 🔥 INTELIGENTNY PARSER LICZB
+# ============================================================
 def parse_number_tokens(tokens, i):
-    """
-    Inteligentny parser liczb:
-    - 123
-    - 123 4        -> 123.4
-    - 123 45       -> 123.45
-    - 123 456      -> 123
-    - 123 kropka 4 -> 123.4
-    """
     if i >= len(tokens):
         return None, i
 
     t = tokens[i]
 
-    # czysta liczba
     if t.replace(",", ".").replace("-", "").replace("+", "").replace(".", "").isdigit():
         base = t.replace(",", ".")
-        # spróbuj zajrzeć w następny token
         if i + 1 < len(tokens):
             t2 = tokens[i + 1]
-            # wariant "kropka 4"
+
             if t2 in ["kropka", "przecinek", "coma", "dot"]:
                 if i + 2 < len(tokens) and tokens[i + 2].isdigit():
-                    frac = tokens[i + 2]
-                    return float(f"{base}.{frac}"), i + 3
-            # wariant "123 4" / "123 45" / "123 456"
+                    return float(f"{base}.{tokens[i+2]}"), i + 3
+
             if t2.isdigit():
                 if len(t2) <= 2:
                     return float(f"{base}.{t2}"), i + 2
                 else:
                     return float(base), i + 1
+
         return float(base), i + 1
 
     return None, i + 1
@@ -72,19 +63,16 @@ def empty_ohlc():
     }
 
 
-def analyze_signal_d1_h1(ticker: str,
-                         d1: Dict,
-                         h1: Dict) -> Dict:
-    """
-    Logika NA JUTRO 2.0:
-    FINAL = D1
-    H1 = filtr
-    """
+# ============================================================
+# 🔥 LOGIKA NA JUTRO 2.0
+# ============================================================
+def analyze_signal_d1_h1(ticker: str, d1: Dict, h1: Dict) -> Dict:
+
     final = empty_ohlc()
 
-    # FINAL = D1
     if d1:
         final.update(d1)
+
     final["interval"] = "D1/H1"
 
     signal = "CZEKAJ"
@@ -93,7 +81,6 @@ def analyze_signal_d1_h1(ticker: str,
     widełki = ""
     tp = ""
 
-    # ====== LOGIKA D1 ======
     if d1 and d1.get("close") and d1.get("ma20") and d1.get("dema9") and d1.get("rsi"):
         close = d1["close"]
         ma20 = d1["ma20"]
@@ -109,7 +96,6 @@ def analyze_signal_d1_h1(ticker: str,
             good = False
             comment = "D1 nie spełnia warunków trendu."
 
-        # widełki + TP
         if d1.get("low") and d1.get("high"):
             low = d1["low"]
             high = d1["high"]
@@ -119,7 +105,6 @@ def analyze_signal_d1_h1(ticker: str,
             tp3 = round(high * 1.03, 2)
             tp = f"{tp1} / {tp2} / {tp3}"
 
-    # ====== FILTR H1 ======
     if h1 and h1.get("rsi") is not None and h1["rsi"] < 40 and signal == "BUY":
         signal = "CZEKAJ"
         good = False
@@ -138,12 +123,11 @@ def analyze_signal_d1_h1(ticker: str,
     }
 
 
+# ============================================================
+# 🔥 PARSER D1/H1 (Styl B)
+# ============================================================
 def parse_d1_h1_from_text(text: str) -> Dict:
-    """
-    Styl B:
-    - 'KGHM D1 195 193 200 198 190 195 62 197 120000'
-    - 'KGHM H1 196 194 198 197 195 196 58 196.5 34000'
-    """
+
     t = text.lower().split()
     ticker = None
     d1 = empty_ohlc()
@@ -155,7 +139,6 @@ def parse_d1_h1_from_text(text: str) -> Dict:
     while i < len(t):
         token = t[i]
 
-        # ticker = pierwsze słowo nie będące liczbą ani d1/h1
         if ticker is None and token not in ["d1", "h1"]:
             if not token.replace(",", ".").replace(".", "").isdigit():
                 ticker = token
@@ -174,7 +157,7 @@ def parse_d1_h1_from_text(text: str) -> Dict:
             d1["rsi"], i = parse_number_tokens(t, i)
             d1["vwap"], i = parse_number_tokens(t, i)
             vol, i = parse_number_tokens(t, i)
-            d1["volume"] = int(vol) if vol is not None else None
+            d1["volume"] = int(vol) if vol else None
             continue
 
         if token == "h1":
@@ -189,7 +172,7 @@ def parse_d1_h1_from_text(text: str) -> Dict:
             h1["rsi"], i = parse_number_tokens(t, i)
             h1["vwap"], i = parse_number_tokens(t, i)
             vol, i = parse_number_tokens(t, i)
-            h1["volume"] = int(vol) if vol is not None else None
+            h1["volume"] = int(vol) if vol else None
             continue
 
         i += 1
@@ -205,16 +188,24 @@ def parse_d1_h1_from_text(text: str) -> Dict:
     return analyze_signal_d1_h1(ticker, d1, h1)
 
 
-# ====== ENDPOINT NA JUTRO 2.0 ======
-
+# ============================================================
+# 🔥 ENDPOINT NA JUTRO 2.0
+# ============================================================
 @app.post("/parse")
 def parse_tomorrow(req: VoiceRequest):
-    text = req.text
-    result = parse_d1_h1_from_text(text)
-    return result
+    return parse_d1_h1_from_text(req.text)
 
 
-# ====== URUCHOMIENIE ======
+# ============================================================
+# 🔥 ENDPOINT LIVE (MUSI BYĆ!)
+# ============================================================
+@app.post("/voice-parse")
+def parse_live(req: VoiceRequest):
+    return {"status": "OK", "text": req.text}
 
+
+# ============================================================
+# 🔥 URUCHOMIENIE
+# ============================================================
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
