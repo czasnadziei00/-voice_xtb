@@ -191,26 +191,50 @@ def system_45_logic(d):
     if None in (o, c, ma, de):
         return None, "Brak kompletu danych do sygnału."
 
-    if c > ma and c > de:
-        return "BUY", "Cena powyżej MA20 i DEMA9 — trend wzrostowy."
-
+    # -----------------------------
+    # 1. STREFY SKRAJNE (CZEKAJ DO vs BUY/SELL)
+    # -----------------------------
+    # CZEKAJ DO BUY: cena pod MA20 i DEMA9, ale bardzo blisko którejś z nich
     if c < ma and c < de:
-        return "SELL", "Cena poniżej MA20 i DEMA9 — trend spadkowy."
+        diff_ma = abs(c - ma) / c
+        diff_de = abs(c - de) / c
+        if diff_ma < 0.0015 or diff_de < 0.0015:
+            return "CZEKAJ DO BUY", "Rynek blisko wybicia w górę — przygotuj się na BUY."
+        else:
+            return "SELL", "Cena poniżej MA20 i DEMA9 — trend spadkowy."
 
+    # CZEKAJ DO SELL: cena nad MA20 i DEMA9, ale bardzo blisko którejś z nich
+    if c > ma and c > de:
+        diff_ma = abs(c - ma) / c
+        diff_de = abs(c - de) / c
+        if diff_ma < 0.0015 or diff_de < 0.0015:
+            return "CZEKAJ DO SELL", "Rynek blisko wybicia w dół — przygotuj się na SELL."
+        else:
+            return "BUY", "Cena powyżej MA20 i DEMA9 — trend wzrostowy."
+
+    # -----------------------------
+    # 2. PRAWIE BUY / PRAWIE SELL
+    # -----------------------------
     if c > ma and c <= de * 1.002:
         return "PRAWIE BUY", "Cena nad MA20, blisko DEMA9 — prawie sygnał BUY."
 
     if c < ma and c >= de * 0.998:
         return "PRAWIE SELL", "Cena pod MA20, blisko DEMA9 — prawie sygnał SELL."
 
+    # -----------------------------
+    # 3. RESET / PRAWIE RESET
+    # -----------------------------
     if (de < c < ma) or (ma < c < de):
         return "RESET", "Cena wróciła do środka — reset trendu."
 
     if abs(c - ma) < 0.001 * c or abs(c - de) < 0.001 * c:
         return "PRAWIE RESET", "Cena bardzo blisko środka — prawie reset."
 
+    # -----------------------------
+    # 4. BRAK SYGNAŁU
+    # -----------------------------
     return "CZEKAJ", "Brak wyraźnego sygnału."
-
+        
 # ---------------------------------------------------------
 # DYNAMICZNE TP3
 # ---------------------------------------------------------
