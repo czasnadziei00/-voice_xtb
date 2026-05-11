@@ -45,11 +45,11 @@ last_used_key = None
 
 BAD_WORDS = {
     "o","l","h","c",
-    "m",  # blokujemy pojedyncze "m"
+    "m",
     "ma","ma20","dema","dema9",
     "rsi","wolumen","volume","entry","usuń","usun",
     "open","low","high","close","cena",
-    "m1","m5","m15","m30","h1","h4","d1","w1","hej","em","em1","em5","em15"
+    "m1","m5","m15","m30","h1","h4","d1","w1","hej","em","em1","em5","em15",
     "hi","haj","hai","hay","hał","hajh","haih",
     "loł","lowe","lołe","lołł","lołu","loło","lołej","loły",
     "bema","bema9","b ma","b ema","ema",
@@ -82,26 +82,33 @@ def extract_interval(t):
     return None
 
 # ---------------------------------------------------------
-# AUTOKOREKTA MA / DEMA
+# AUTOKOREKTA MA / DEMA (pełny BEMA FIX)
 # ---------------------------------------------------------
 def autocorrect_indicators(text: str):
     t = text.lower().strip()
 
+    # MA
     t = t.replace("e ma", "ma")
     t = t.replace("m a", "ma")
     t = t.replace("ema", "ma")
 
-    t = t.replace("bema", "dema")
-    t = t.replace("b ma", "dema")
-    t = t.replace("b ema", "dema")
-    t = t.replace("de ma", "dema")
-    t = t.replace("deema", "dema")
+    # --- BEMA → DEMA9 (pełna korekcja fonetyczna PRO) ---
+    bema_aliases = [
+        "bema", "bema9", "b ma", "b ema",
+        "beema", "beema9", "bimma", "bemma",
+        "bem ma", "b e m a", "b e m a 9",
+        "be ma", "be ema", "bemma", "bema "
+    ]
+    for alias in bema_aliases:
+        t = t.replace(alias, "dema9")
 
+    # pojedyncze słowa
     if t == "ma":
         return "ma20"
     if t == "dema":
         return "dema9"
 
+    # MA20 / DEMA9 z wartością
     if t.startswith("ma "):
         return t.replace("ma ", "ma20 ")
     if t.startswith("dema "):
@@ -145,9 +152,17 @@ def parse_piece(text: str):
     m = re.search(r"dema9\s*([\d\., ]+)", t)
     if m: out["dema9"] = norm(m.group(1))
 
-    for alias in ["bema9","bema","b ma","b ema"]:
+    # pełny BEMA FIX również tutaj
+    bema_aliases = [
+        "bema9","bema","b ma","b ema",
+        "beema","beema9","bimma","bemma",
+        "bem ma","b e m a","b e m a 9",
+        "be ma","be ema","bemma"
+    ]
+    for alias in bema_aliases:
         m = re.search(rf"\b{alias}\s*([\d\., ]+)", t)
-        if m: out["dema9"] = norm(m.group(1))
+        if m:
+            out["dema9"] = norm(m.group(1))
 
     m = re.search(r"rsi\s*([\d\., ]+)", t)
     if m: out["rsi"] = norm(m.group(1))
