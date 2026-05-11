@@ -52,7 +52,7 @@ BAD_WORDS = {
     "m1","m5","m15","m30","h1","h4","d1","w1","hej","em","em1","em5","em15",
     "hi","haj","hai","hay","hał","hajh","haih",
     "loł","lowe","lołe","lołł","lołu","loło","lołej","loły",
-    "bema","bema9","b ma","b ema","ema",
+    "bema","bema9","b ma","b ema","beema","beema9","bimma","bemma","bem ma","b e m a","b e m a 9",
     "clos","closs","closse","cloos","cloose","clołs","klołs","kloz","kloze"
 }
 
@@ -81,38 +81,12 @@ def extract_interval(t):
     if "m30" in t: return "M30"
     return None
 
-# ---------------------------------------------------------
-# AUTOKOREKTA MA / DEMA (pełny BEMA FIX)
-# ---------------------------------------------------------
 def autocorrect_indicators(text: str):
     t = text.lower().strip()
 
-    # MA
     t = t.replace("e ma", "ma")
     t = t.replace("m a", "ma")
     t = t.replace("ema", "ma")
-
-    # --- BEMA → DEMA9 (pełna korekcja fonetyczna PRO) ---
-    bema_aliases = [
-        "bema", "bema9", "b ma", "b ema",
-        "beema", "beema9", "bimma", "bemma",
-        "bem ma", "b e m a", "b e m a 9",
-        "be ma", "be ema", "bemma", "bema "
-    ]
-    for alias in bema_aliases:
-        t = t.replace(alias, "dema9")
-
-    # pojedyncze słowa
-    if t == "ma":
-        return "ma20"
-    if t == "dema":
-        return "dema9"
-
-    # MA20 / DEMA9 z wartością
-    if t.startswith("ma "):
-        return t.replace("ma ", "ma20 ")
-    if t.startswith("dema "):
-        return t.replace("dema ", "dema9 ")
 
     return t
 
@@ -152,17 +126,28 @@ def parse_piece(text: str):
     m = re.search(r"dema9\s*([\d\., ]+)", t)
     if m: out["dema9"] = norm(m.group(1))
 
-    # pełny BEMA FIX również tutaj
+    # --- BEMA → DEMA9 (pełna obsługa wszystkich wariantów) ---
     bema_aliases = [
-        "bema9","bema","b ma","b ema",
-        "beema","beema9","bimma","bemma",
-        "bem ma","b e m a","b e m a 9",
-        "be ma","be ema","bemma"
+        "bema", "b ma", "b ema",
+        "beema", "bemma", "bimma",
+        "b e m a", "bem ma"
     ]
+
+    # Format 1: "bema9 1160"
     for alias in bema_aliases:
-        m = re.search(rf"\b{alias}\s*([\d\., ]+)", t)
+        m = re.search(rf"\b{alias}9\s*([\d\., ]+)", t)
         if m:
             out["dema9"] = norm(m.group(1))
+
+    # Format 2: "bema 9 1160"
+    m = re.search(r"(bema|b ma|b ema|beema|bemma|bimma)\s+9\s+([\d\., ]+)", t)
+    if m:
+        out["dema9"] = norm(m.group(2))
+
+    # Format 3: "bema 1160"
+    m = re.search(r"(bema|b ma|b ema|beema|bemma|bimma)\s+([\d\., ]+)", t)
+    if m:
+        out["dema9"] = norm(m.group(2))
 
     m = re.search(r"rsi\s*([\d\., ]+)", t)
     if m: out["rsi"] = norm(m.group(1))
@@ -183,18 +168,12 @@ def parse_piece(text: str):
     out["interval"] = extract_interval(t)
     return out
 
-# ---------------------------------------------------------
-# SYSTEM 7.0 — sygnały
-# ---------------------------------------------------------
 def system_45_logic(d):
     o, c, ma, de = d["open"], d["close"], d["ma20"], d["dema9"]
     if None in (o, c, ma, de):
         return None, "Brak kompletu danych do sygnału."
 
-    # -----------------------------
-    # 1. STREFY SKRAJNE (CZEKAJ DO vs BUY/SELL)
-    # -----------------------------
-    # CZEKAJ DO BUY: cena pod MA20 i DEMA9, ale bardzo blisko którejś z nich
+    # CZEKAJ DO BUY
     if c < ma and c < de:
         diff_ma = abs(c - ma) / c
         diff_de = abs(c - de) / c
@@ -203,7 +182,7 @@ def system_45_logic(d):
         else:
             return "SELL", "Cena poniżej MA20 i DEMA9 — trend spadkowy."
 
-    # CZEKAJ DO SELL: cena nad MA20 i DEMA9, ale bardzo blisko którejś z nich
+    # CZEKAJ DO SELL
     if c > ma and c > de:
         diff_ma = abs(c - ma) / c
         diff_de = abs(c - de) / c
@@ -212,32 +191,20 @@ def system_45_logic(d):
         else:
             return "BUY", "Cena powyżej MA20 i DEMA9 — trend wzrostowy."
 
-    # -----------------------------
-    # 2. PRAWIE BUY / PRAWIE SELL
-    # -----------------------------
     if c > ma and c <= de * 1.002:
         return "PRAWIE BUY", "Cena nad MA20, blisko DEMA9 — prawie sygnał BUY."
 
     if c < ma and c >= de * 0.998:
         return "PRAWIE SELL", "Cena pod MA20, blisko DEMA9 — prawie sygnał SELL."
 
-    # -----------------------------
-    # 3. RESET / PRAWIE RESET
-    # -----------------------------
     if (de < c < ma) or (ma < c < de):
         return "RESET", "Cena wróciła do środka — reset trendu."
 
     if abs(c - ma) < 0.001 * c or abs(c - de) < 0.001 * c:
         return "PRAWIE RESET", "Cena bardzo blisko środka — prawie reset."
 
-    # -----------------------------
-    # 4. BRAK SYGNAŁU
-    # -----------------------------
     return "CZEKAJ", "Brak wyraźnego sygnału."
-        
-# ---------------------------------------------------------
-# DYNAMICZNE TP3
-# ---------------------------------------------------------
+
 def dynamic_tp3(d):
     c, ma, de = d["close"], d["ma20"], d["dema9"]
     if None in (c, ma, de):
@@ -255,9 +222,6 @@ def dynamic_tp3(d):
 
     return None
 
-# ---------------------------------------------------------
-# KORELACJA KGHM ↔ COPPER
-# ---------------------------------------------------------
 def apply_correlation(memory, state, ticker):
     if ticker != "KGHM":
         return state
@@ -284,9 +248,6 @@ def apply_correlation(memory, state, ticker):
 
     return state
 
-# ---------------------------------------------------------
-# GŁÓWNY ENDPOINT
-# ---------------------------------------------------------
 @app.post("/voice-parse")
 def voice_parse(req: VoiceRequest):
     global last_used_key
@@ -343,9 +304,6 @@ def voice_parse(req: VoiceRequest):
     last_used_key = key
     return state
 
-# ---------------------------------------------------------
-# DELETE ENDPOINT
-# ---------------------------------------------------------
 @app.post("/voice-parse/delete")
 def delete_ticker(req: DeleteRequest):
     global last_used_key
