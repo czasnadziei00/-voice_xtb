@@ -46,7 +46,7 @@ BAD_WORDS = {
     "o","l","h","c",
     "ma","ma20","dema","dema9",
     "rsi","wolumen","volume","entry","usuń","usun",
-    "open","low","high","close","cena",
+    "open","low","high","close","cena","m","em",
     "m1","m5","m15","m30","h1","h4","d1","w1",
     "hi","haj","hai","hay","hał","hajh","haih",
     "loł","lowe","lołe","lołł","lołu","loło","lołej","loły",
