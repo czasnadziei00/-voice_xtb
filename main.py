@@ -111,7 +111,6 @@ def autocorrect_indicators(text: str):
 
     return t
 
-
 def parse_piece(text: str):
     t = autocorrect_indicators(text.lower())
     out = {}
@@ -176,10 +175,31 @@ def system_45_logic(d):
     o, c, ma, de = d["open"], d["close"], d["ma20"], d["dema9"]
     if None in (o, c, ma, de):
         return None, "Brak kompletu danych do sygnału."
+
+    # BUY
     if c > ma and c > de:
         return "BUY", "Cena powyżej MA20 i DEMA9 — trend wzrostowy."
+
+    # SELL
     if c < ma and c < de:
         return "SELL", "Cena poniżej MA20 i DEMA9 — trend spadkowy."
+
+    # PRAWIE BUY
+    if c > ma and c <= de * 1.002:
+        return "PRAWIE BUY", "Cena nad MA20, blisko DEMA9 — prawie sygnał BUY."
+
+    # PRAWIE SELL
+    if c < ma and c >= de * 0.998:
+        return "PRAWIE SELL", "Cena pod MA20, blisko DEMA9 — prawie sygnał SELL."
+
+    # RESET
+    if (de < c < ma) or (ma < c < de):
+        return "RESET", "Cena wróciła do środka — reset trendu."
+
+    # PRAWIE RESET
+    if abs(c - ma) < 0.001 * c or abs(c - de) < 0.001 * c:
+        return "PRAWIE RESET", "Cena bardzo blisko środka — prawie reset."
+
     return "CZEKAJ", "Brak wyraźnego sygnału."
 
 
