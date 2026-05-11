@@ -53,7 +53,7 @@ BAD_WORDS = {
     "hi","haj","hai","hay","hał","hajh","haih",
     "loł","lowe","lołe","lołł","lołu","loło","lołej","loły",
     "bema","bema9","b ma","b ema","beema","beema9","bimma","bemma","bem ma","b e m a","b e m a 9",
-    "clos","closs","closse","cloos","cloose","clołs","klołs","kloz","kloze"
+    "clos","closs","closse","cloos","cloose","clołs","klołs","kloz","kloze","klaus",
 }
 
 def norm(x):
