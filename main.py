@@ -36,6 +36,7 @@ def empty_state(ticker, interval):
         "entry": None,
         "after_price": None,
         "signal": None,
+        "tp3": None,
         "comment": "Czekam na dane…",
     }
 
@@ -44,9 +45,10 @@ last_used_key = None
 
 BAD_WORDS = {
     "o","l","h","c",
+    "m",  # blokujemy pojedyncze "m"
     "ma","ma20","dema","dema9",
     "rsi","wolumen","volume","entry","usuń","usun",
-    "open","low","high","close","cena","m","em",
+    "open","low","high","close","cena",
     "m1","m5","m15","m30","h1","h4","d1","w1",
     "hi","haj","hai","hay","hał","hajh","haih",
     "loł","lowe","lołe","lołł","lołu","loło","lołej","loły",
@@ -68,7 +70,7 @@ def extract_ticker(text: str):
         w_clean = w.lower()
         if w_clean in BAD_WORDS:
             continue
-        if re.fullmatch(r"[A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]+", w_clean):
+        if re.fullmatch(r"[A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]{2,}", w_clean):
             return w.upper()
     return None
 
@@ -80,15 +82,14 @@ def extract_interval(t):
     return None
 
 # ---------------------------------------------------------
-# AUTOKOREKTA MA / DEMA (Twoje wymagania)
+# AUTOKOREKTA MA / DEMA
 # ---------------------------------------------------------
 def autocorrect_indicators(text: str):
     t = text.lower().strip()
 
-    # --- poprawa błędów Google ---
     t = t.replace("e ma", "ma")
     t = t.replace("m a", "ma")
-    t = t.replace("ema", "ma")  # jeśli nie ma liczby → traktujemy jako MA20
+    t = t.replace("ema", "ma")
 
     t = t.replace("bema", "dema")
     t = t.replace("b ma", "dema")
@@ -96,16 +97,13 @@ def autocorrect_indicators(text: str):
     t = t.replace("de ma", "dema")
     t = t.replace("deema", "dema")
 
-    # --- skróty bez liczb ---
     if t == "ma":
         return "ma20"
     if t == "dema":
         return "dema9"
 
-    # --- skróty z liczbą ---
     if t.startswith("ma "):
         return t.replace("ma ", "ma20 ")
-
     if t.startswith("dema "):
         return t.replace("dema ", "dema9 ")
 
@@ -170,39 +168,86 @@ def parse_piece(text: str):
     out["interval"] = extract_interval(t)
     return out
 
-
+# ---------------------------------------------------------
+# SYSTEM 7.0 — sygnały
+# ---------------------------------------------------------
 def system_45_logic(d):
     o, c, ma, de = d["open"], d["close"], d["ma20"], d["dema9"]
     if None in (o, c, ma, de):
         return None, "Brak kompletu danych do sygnału."
 
-    # BUY
     if c > ma and c > de:
         return "BUY", "Cena powyżej MA20 i DEMA9 — trend wzrostowy."
 
-    # SELL
     if c < ma and c < de:
         return "SELL", "Cena poniżej MA20 i DEMA9 — trend spadkowy."
 
-    # PRAWIE BUY
     if c > ma and c <= de * 1.002:
         return "PRAWIE BUY", "Cena nad MA20, blisko DEMA9 — prawie sygnał BUY."
 
-    # PRAWIE SELL
     if c < ma and c >= de * 0.998:
         return "PRAWIE SELL", "Cena pod MA20, blisko DEMA9 — prawie sygnał SELL."
 
-    # RESET
     if (de < c < ma) or (ma < c < de):
         return "RESET", "Cena wróciła do środka — reset trendu."
 
-    # PRAWIE RESET
     if abs(c - ma) < 0.001 * c or abs(c - de) < 0.001 * c:
         return "PRAWIE RESET", "Cena bardzo blisko środka — prawie reset."
 
     return "CZEKAJ", "Brak wyraźnego sygnału."
 
+# ---------------------------------------------------------
+# DYNAMICZNE TP3
+# ---------------------------------------------------------
+def dynamic_tp3(d):
+    c, ma, de = d["close"], d["ma20"], d["dema9"]
+    if None in (c, ma, de):
+        return None
 
+    trend_strength = abs(ma - de)
+    mid = (ma + de) / 2
+    distance = abs(c - mid)
+    tp3 = distance + trend_strength
+
+    if d["signal"] == "BUY":
+        return round(c + tp3, 2)
+    if d["signal"] == "SELL":
+        return round(c - tp3, 2)
+
+    return None
+
+# ---------------------------------------------------------
+# KORELACJA KGHM ↔ COPPER
+# ---------------------------------------------------------
+def apply_correlation(memory, state, ticker):
+    if ticker != "KGHM":
+        return state
+
+    if "COPPER|M5" not in memory:
+        return state
+
+    copper = memory["COPPER|M5"]
+    sig = copper.get("signal")
+
+    if not sig:
+        return state
+
+    if sig == "BUY":
+        state["comment"] += " | Korelacja: Copper BUY — wzmocnienie sygnału."
+    elif sig == "SELL":
+        state["comment"] += " | Korelacja: Copper SELL — ryzyko spadku."
+    elif sig == "PRAWIE BUY":
+        state["comment"] += " | Korelacja: Copper prawie BUY."
+    elif sig == "PRAWIE SELL":
+        state["comment"] += " | Korelacja: Copper prawie SELL."
+    elif sig == "RESET":
+        state["comment"] += " | Korelacja: Copper reset — możliwa zmiana kierunku."
+
+    return state
+
+# ---------------------------------------------------------
+# GŁÓWNY ENDPOINT
+# ---------------------------------------------------------
 @app.post("/voice-parse")
 def voice_parse(req: VoiceRequest):
     global last_used_key
@@ -252,11 +297,16 @@ def voice_parse(req: VoiceRequest):
     sig, com = system_45_logic(state)
     state["signal"] = sig
     state["comment"] = com
+    state["tp3"] = dynamic_tp3(state)
+
+    state = apply_correlation(memory, state, ticker)
 
     last_used_key = key
     return state
 
-
+# ---------------------------------------------------------
+# DELETE ENDPOINT
+# ---------------------------------------------------------
 @app.post("/voice-parse/delete")
 def delete_ticker(req: DeleteRequest):
     global last_used_key
