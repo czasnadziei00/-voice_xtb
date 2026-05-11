@@ -52,7 +52,7 @@ BAD_WORDS = {
     "m1","m5","m15","m30","h1","h4","d1","w1","hej","em","em1","em5","em15"
     "hi","haj","hai","hay","hał","hajh","haih",
     "loł","lowe","lołe","lołł","lołu","loło","lołej","loły",
-    "bema","bema9","b ma","b ema",
+    "bema","bema9","b ma","b ema","ema",
     "clos","closs","closse","cloos","cloose","clołs","klołs","kloz","kloze"
 }
 
