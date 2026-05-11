@@ -31,7 +31,6 @@ def empty_state(ticker, interval):
     return {
         "ticker": ticker,
         "interval": interval,
-        "time": None,
         "open": None,
         "high": None,
         "low": None,
@@ -103,7 +102,7 @@ def extract_interval(t):
 
 
 # -----------------------------
-# AUTOKOREKTA (Twoja + PL MODE)
+# AUTOKOREKTA PL MODE
 # -----------------------------
 def autocorrect_indicators(text: str):
     t = text.lower().strip()
@@ -126,7 +125,7 @@ def autocorrect_indicators(text: str):
 
 
 # -----------------------------
-# PARSER JEDNEGO FRAGMENTU
+# PARSER
 # -----------------------------
 def parse_piece(text: str):
     t = autocorrect_indicators(text.lower())
@@ -135,10 +134,6 @@ def parse_piece(text: str):
     # USUŃ
     if "usuń" in t or "usun" in t:
         out["delete"] = True
-
-    # TIME
-    m = re.search(r"\b(\d{1,2}:\d{2})\b", t)
-    if m: out["time"] = m.group(1)
 
     # ENTRY
     m = re.search(r"entry\s*([\d\., ]+)", t)
@@ -152,17 +147,9 @@ def parse_piece(text: str):
     m = re.search(r"\b(low|l)\s+([\d\., ]+)", t)
     if m: out["low"] = norm(m.group(2))
 
-    for alias in ["loł","lowe","lołe","lołł","lołu","loło","lołej","loły"]:
-        m = re.search(rf"\b{alias}\s+([\d\., ]+)", t)
-        if m: out["low"] = norm(m.group(1))
-
     # HIGH
     m = re.search(r"\b(high|h)\s+([\d\., ]+)", t)
     if m: out["high"] = norm(m.group(2))
-
-    for alias in ["hi","haj","hai","hay","hał","hajh","haih"]:
-        m = re.search(rf"\b{alias}\s+([\d\., ]+)", t)
-        if m: out["high"] = norm(m.group(1))
 
     # MA20
     m = re.search(r"ma20\s*([\d\., ]+)", t)
@@ -171,23 +158,6 @@ def parse_piece(text: str):
     # DEMA9
     m = re.search(r"dema9\s*([\d\., ]+)", t)
     if m: out["dema9"] = norm(m.group(1))
-
-    # BEMA → DEMA9
-    bema_aliases = [
-        "bema", "b ma", "b ema",
-        "beema", "bemma", "bimma",
-        "b e m a", "bem ma"
-    ]
-
-    for alias in bema_aliases:
-        m = re.search(rf"\b{alias}9\s*([\d\., ]+)", t)
-        if m: out["dema9"] = norm(m.group(1))
-
-    m = re.search(r"(bema|b ma|b ema|beema|bemma|bimma)\s+9\s+([\d\., ]+)", t)
-    if m: out["dema9"] = norm(m.group(2))
-
-    m = re.search(r"(bema|b ma|b ema|beema|bemma|bimma)\s+([\d\., ]+)", t)
-    if m: out["dema9"] = norm(m.group(2))
 
     # RSI
     m = re.search(r"rsi\s*([\d\., ]+)", t)
@@ -200,10 +170,6 @@ def parse_piece(text: str):
     # CLOSE
     m = re.search(r"(close)\s+([\d\., ]+)", t)
     if m: out["close"] = norm(m.group(2))
-
-    for alias in ["clos","closs","closse","cloos","cloose","clołs","klołs","kloz","kloze"]:
-        m = re.search(rf"\b{alias}\s+([\d\., ]+)", t)
-        if m: out["close"] = norm(m.group(1))
 
     # AFTER HOURS
     m = re.search(r"(after|after price|after hours|po godzinie)\s*([\d\., ]+)", t)
@@ -353,7 +319,7 @@ def voice_parse(req: VoiceRequest):
     state = memory[key]
 
     # NADPISYWANIE DANYCH
-    for k in ["time","open","high","low","close","ma20","dema9","rsi","volume","after_price"]:
+    for k in ["open","high","low","close","ma20","dema9","rsi","volume","after_price"]:
         if piece.get(k) is not None:
             state[k] = piece[k]
 
