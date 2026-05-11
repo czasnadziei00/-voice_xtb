@@ -34,11 +34,11 @@ def empty_state(ticker, interval):
         "rsi": None,
         "volume": None,
         "entry": None,
+        "after_price": None,
         "signal": None,
         "comment": "Czekam na dane…",
     }
 
-# 🔥 pamięć: każdy klucz to ticker|interval
 memory = {}
 last_used_key = None
 
@@ -50,7 +50,8 @@ BAD_WORDS = {
     "m1","m5","m15","m30","h1","h4","d1","w1",
     "hi","haj","hai","hay","hał","hajh","haih",
     "loł","lowe","lołe","lołł","lołu","loło","lołej","loły",
-    "bema","bema9","b ma","b ema"
+    "bema","bema9","b ma","b ema",
+    "clos","closs","closse","cloos","cloose","clołs","klołs","kloz","kloze"
 }
 
 def norm(x):
@@ -124,6 +125,16 @@ def parse_piece(text: str):
     m = re.search(r"(wolumen|volume)\s*([\d\., ]+)", t)
     if m: out["volume"] = norm(m.group(2))
 
+    m = re.search(r"(close|cena)\s+([\d\., ]+)", t)
+    if m: out["close"] = norm(m.group(2))
+
+    for alias in ["clos","closs","closse","cloos","cloose","clołs","klołs","kloz","kloze"]:
+        m = re.search(rf"\b{alias}\s+([\d\., ]+)", t)
+        if m: out["close"] = norm(m.group(1))
+
+    m = re.search(r"(po godzinie|after|after price|after hours)\s*([\d\., ]+)", t)
+    if m: out["after_price"] = norm(m.group(2))
+
     out["interval"] = extract_interval(t)
     return out
 
@@ -147,13 +158,11 @@ def voice_parse(req: VoiceRequest):
     ticker = extract_ticker(text)
     interval = piece.get("interval")
 
-    # 🔥 jeśli padł ticker → aktualizujemy last_used_key
     if ticker:
         if not interval:
-            interval = "M5"  # domyślny interwał
+            interval = "M5"
         last_used_key = f"{ticker}|{interval}"
 
-    # 🔥 jeśli NIE padł ticker → używamy ostatniego wiersza
     if not ticker:
         if not last_used_key:
             return {"ticker": None, "comment": "Brak tickera — podaj nazwę spółki."}
@@ -161,7 +170,6 @@ def voice_parse(req: VoiceRequest):
 
     key = f"{ticker}|{interval}"
 
-    # 🔥 USUŃ
     if piece.get("delete"):
         if key in memory:
             del memory[key]
@@ -169,18 +177,15 @@ def voice_parse(req: VoiceRequest):
             last_used_key = None
         return {"ticker": ticker, "interval": interval, "deleted": True}
 
-    # 🔥 pobierz lub utwórz wiersz
     if key not in memory:
         memory[key] = empty_state(ticker, interval)
 
     state = memory[key]
 
-    # 🔥 aktualizacja pól
-    for k in ["time","open","high","low","close","ma20","dema9","rsi","volume"]:
+    for k in ["time","open","high","low","close","ma20","dema9","rsi","volume","after_price"]:
         if piece.get(k) is not None:
             state[k] = piece[k]
 
-    # ENTRY
     if piece.get("entry") is not None:
         if piece["entry"] == 0:
             state["entry"] = None
@@ -189,7 +194,6 @@ def voice_parse(req: VoiceRequest):
         else:
             state["entry"] = piece["entry"]
 
-    # SYGNAŁ
     sig, com = system_45_logic(state)
     state["signal"] = sig
     state["comment"] = com
