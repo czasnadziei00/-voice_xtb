@@ -79,8 +79,41 @@ def extract_interval(t):
     if "m30" in t: return "M30"
     return None
 
+# ---------------------------------------------------------
+# AUTOKOREKTA MA / DEMA (Twoje wymagania)
+# ---------------------------------------------------------
+def autocorrect_indicators(text: str):
+    t = text.lower().strip()
+
+    # --- poprawa błędów Google ---
+    t = t.replace("e ma", "ma")
+    t = t.replace("m a", "ma")
+    t = t.replace("ema", "ma")  # jeśli nie ma liczby → traktujemy jako MA20
+
+    t = t.replace("bema", "dema")
+    t = t.replace("b ma", "dema")
+    t = t.replace("b ema", "dema")
+    t = t.replace("de ma", "dema")
+    t = t.replace("deema", "dema")
+
+    # --- skróty bez liczb ---
+    if t == "ma":
+        return "ma20"
+    if t == "dema":
+        return "dema9"
+
+    # --- skróty z liczbą ---
+    if t.startswith("ma "):
+        return t.replace("ma ", "ma20 ")
+
+    if t.startswith("dema "):
+        return t.replace("dema ", "dema9 ")
+
+    return t
+
+
 def parse_piece(text: str):
-    t = text.lower()
+    t = autocorrect_indicators(text.lower())
     out = {}
 
     if "usuń" in t or "usun" in t:
@@ -138,6 +171,7 @@ def parse_piece(text: str):
     out["interval"] = extract_interval(t)
     return out
 
+
 def system_45_logic(d):
     o, c, ma, de = d["open"], d["close"], d["ma20"], d["dema9"]
     if None in (o, c, ma, de):
@@ -147,6 +181,7 @@ def system_45_logic(d):
     if c < ma and c < de:
         return "SELL", "Cena poniżej MA20 i DEMA9 — trend spadkowy."
     return "CZEKAJ", "Brak wyraźnego sygnału."
+
 
 @app.post("/voice-parse")
 def voice_parse(req: VoiceRequest):
@@ -200,6 +235,7 @@ def voice_parse(req: VoiceRequest):
 
     last_used_key = key
     return state
+
 
 @app.post("/voice-parse/delete")
 def delete_ticker(req: DeleteRequest):
