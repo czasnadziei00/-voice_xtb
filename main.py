@@ -123,54 +123,89 @@ def parse_piece(text: str):
     return out
 
 # ---------------------------------------------------------
-# SYSTEM 4.5 LOGIC
+# DYNAMICZNE MOMENTUM
+# ---------------------------------------------------------
+def compute_momentum(d):
+    ma = d["ma20"]
+    de = d["dema9"]
+    if ma is None or de is None:
+        return None, None, None
+
+    diff = de - ma
+    direction = "UP" if diff > 0 else "DOWN" if diff < 0 else "FLAT"
+    strength = abs(diff) / ma if ma != 0 else 0.0
+    return diff, direction, strength
+
+# ---------------------------------------------------------
+# SYSTEM 4.5+ LOGIC Z MOMENTUM
 # ---------------------------------------------------------
 def system_45_logic(d):
     o, c, ma, de = d["open"], d["close"], d["ma20"], d["dema9"]
     if None in (o, c, ma, de):
         return None, "Brak kompletu danych do sygnału."
 
-    # SELL
-    if c < ma and c < de:
+    diff, direction, strength = compute_momentum(d)
+
+    # SELL — momentum w dół, cena pod wszystkim
+    if c < ma and c < de and direction == "DOWN":
         if abs(c - ma)/c < 0.0015 or abs(c - de)/c < 0.0015:
-            return "CZEKAJ DO BUY", "Blisko wybicia w górę."
-        return "SELL", "Cena poniżej MA20 i DEMA9."
+            return "CZEKAJ DO BUY", "Momentum spadkowe, ale cena blisko średnich — możliwy zwrot w górę."
+        return "SELL", "Momentum spadkowe — cena poniżej MA20 i DEMA9."
 
-    # BUY
-    if c > ma and c > de:
+    # BUY — momentum w górę, cena nad wszystkim
+    if c > ma and c > de and direction == "UP":
         if abs(c - ma)/c < 0.0015 or abs(c - de)/c < 0.0015:
-            return "CZEKAJ DO SELL", "Blisko wybicia w dół."
-        return "BUY", "Cena powyżej MA20 i DEMA9."
+            return "CZEKAJ DO SELL", "Momentum wzrostowe, ale cena blisko średnich — możliwy zwrot w dół."
+        return "BUY", "Momentum wzrostowe — cena powyżej MA20 i DEMA9."
 
-    # PRAWIE BUY
-    if c > ma and c <= de * 1.002:
-        return "PRAWIE BUY", "Blisko BUY."
+    # CZEKAJ DO BUY — pullback do DEMA9 przy momentum UP
+    if direction == "UP" and c < de and c > ma:
+        return "CZEKAJ DO BUY", "Pullback do DEMA9 przy rosnącym momentum — przygotuj się na BUY."
 
-    # PRAWIE SELL
-    if c < ma and c >= de * 0.998:
-        return "PRAWIE SELL", "Blisko SELL."
+    # CZEKAJ DO SELL — pullback do DEMA9 przy momentum DOWN
+    if direction == "DOWN" and c > de and c < ma:
+        return "CZEKAJ DO SELL", "Pullback do DEMA9 przy spadającym momentum — przygotuj się na SELL."
 
-    # RESET
-    if (de < c < ma) or (ma < c < de):
-        return "RESET", "Cena w środku."
+    # PRAWIE BUY — cena bardzo blisko DEMA9 przy momentum UP
+    if direction == "UP" and c >= ma and abs(c - de)/c < 0.002:
+        return "PRAWIE BUY", "Cena bardzo blisko DEMA9 przy rosnącym momentum — prawie BUY."
 
-    # PRAWIE RESET
-    if abs(c - ma) < 0.001*c or abs(c - de) < 0.001*c:
-        return "PRAWIE RESET", "Blisko środka."
+    # PRAWIE SELL — cena bardzo blisko DEMA9 przy momentum DOWN
+    if direction == "DOWN" and c <= ma and abs(c - de)/c < 0.002:
+        return "PRAWIE SELL", "Cena bardzo blisko DEMA9 przy spadającym momentum — prawie SELL."
 
-    return "CZEKAJ", "Brak sygnału."
+    # RESET — momentum zmienia stronę względem MA20
+    if (de > ma and c < ma) or (de < ma and c > ma):
+        return "RESET", "Momentum po przeciwnej stronie MA20 niż cena — reset trendu."
+
+    # PRAWIE RESET — wszystko bardzo blisko MA20
+    if abs(c - ma)/c < 0.001 and abs(de - ma)/ma < 0.001:
+        return "PRAWIE RESET", "Cena i DEMA9 bardzo blisko MA20 — prawie reset."
+
+    return "CZEKAJ", "Brak wyraźnego sygnału — momentum niejednoznaczne."
 
 # ---------------------------------------------------------
-# TP3
+# TP3 — Z UWZGLĘDNIENIEM MOMENTUM
 # ---------------------------------------------------------
 def dynamic_tp3(d):
     c, ma, de = d["close"], d["ma20"], d["dema9"]
     if None in (c, ma, de):
         return None
+
+    diff, direction, strength = compute_momentum(d)
     mid = (ma + de) / 2
     dist = abs(c - mid)
-    strength = abs(ma - de)
-    tp = dist + strength
+
+    # bazowy TP
+    tp = dist + abs(ma - de)
+
+    # wzmocnienie TP przy silnym momentum
+    if strength is not None:
+        if strength > 0.01:
+            tp *= 1.3
+        elif strength > 0.005:
+            tp *= 1.15
+
     if d["signal"] == "BUY":
         return round(c + tp, 2)
     if d["signal"] == "SELL":
@@ -215,6 +250,19 @@ def apply_correlation(memory, state, ticker):
     return state
 
 # ---------------------------------------------------------
+# RSI — DODATKOWY KOMENTARZ
+# ---------------------------------------------------------
+def apply_rsi_comment(state):
+    rsi = state.get("rsi")
+    if rsi is None:
+        return state
+    if rsi > 70:
+        state["comment"] += " | RSI wysokie (przegrzanie)."
+    elif rsi < 30:
+        state["comment"] += " | RSI niskie (wyprzedanie)."
+    return state
+
+# ---------------------------------------------------------
 # ENDPOINT
 # ---------------------------------------------------------
 @app.post("/voice-parse")
@@ -249,17 +297,25 @@ def voice_parse(req: VoiceRequest):
         if piece.get(k) is not None:
             state[k] = piece[k]
 
-    # missing?
-    miss = missing_fields(state)
-    if miss:
+    # entry = 0 → zamknięcie pozycji
+    if piece.get("entry") is not None and piece["entry"] == 0:
+        state["entry"] = None
+        state["signal"] = "CZEKAJ"
+        state["tp3"] = None
+        state["comment"] = "Pozycja zamknięta."
+        state["low"] = None
+        state["high"] = None
+        return state
+
+    missing = missing_fields(state)
+    if missing:
         state["signal"] = None
-        state["comment"] = "Brakuje: " + ", ".join(miss)
+        state["comment"] = "Brakuje: " + ", ".join(missing)
         state["tp3"] = None
         state["low"] = None
         state["high"] = None
         return state
 
-    # logic
     sig, com = system_45_logic(state)
     state["signal"] = sig
     state["comment"] = com
@@ -267,6 +323,7 @@ def voice_parse(req: VoiceRequest):
     state["tp3"] = dynamic_tp3(state)
     state = apply_correlation(memory, state, ticker)
     state = apply_widelki(state)
+    state = apply_rsi_comment(state)
 
     last_used_key = key
     return state
