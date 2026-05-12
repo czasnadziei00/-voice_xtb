@@ -19,6 +19,7 @@ app.add_middleware(
 class VoiceRequest(BaseModel):
     text: str
 
+
 class DeleteRequest(BaseModel):
     ticker: str
     interval: str | None = None
@@ -54,12 +55,12 @@ last_used_key = None
 # ZABRONIONE SŁOWA
 # ---------------------------------------------------------
 BAD_WORDS = {
-    "o","l","h","c",
+    "o", "l", "h", "c",
     "m",
-    "ma","ma20","dema","dema9",
-    "rsi","wolumen","volume","entry","usuń","usun",
-    "open","low","high","close","cena",
-    "m1","m5","m15","m30","h1","h4","d1","w1",
+    "ma", "ma20", "dema", "dema9",
+    "rsi", "wolumen", "volume", "entry", "usuń", "usun",
+    "open", "low", "high", "close", "cena",
+    "m1", "m5", "m15", "m30", "h1", "h4", "d1", "w1",
 }
 
 # ---------------------------------------------------------
@@ -85,15 +86,22 @@ def extract_ticker(text: str):
     return None
 
 
-def extract_interval(t):
+def extract_interval(t: str):
     t = t.lower()
-    if "m15" in t: return "M15"
-    if "m5" in t: return "M5"
-    if "m1" in t: return "M1"
-    if "m30" in t: return "M30"
-    if "h1" in t: return "H1"
-    if "h4" in t: return "H4"
-    if "d1" in t: return "D1"
+    if "m15" in t:
+        return "M15"
+    if "m5" in t:
+        return "M5"
+    if "m1" in t:
+        return "M1"
+    if "m30" in t:
+        return "M30"
+    if "h1" in t:
+        return "H1"
+    if "h4" in t:
+        return "H4"
+    if "d1" in t:
+        return "D1"
     return None
 
 
@@ -123,50 +131,60 @@ def autocorrect_indicators(text: str):
 # ---------------------------------------------------------
 def parse_piece(text: str):
     t = autocorrect_indicators(text.lower())
-    out = {}
+    out: dict = {}
 
     if "usuń" in t or "usun" in t:
         out["delete"] = True
 
     # entry
     m = re.search(r"entry\s+([\d\.,]+)", t)
-    if m: out["entry"] = norm(m.group(1))
+    if m:
+        out["entry"] = norm(m.group(1))
 
     # open
     m = re.search(r"\b(open|o)\s+([\d\.,]+)", t)
-    if m: out["open"] = norm(m.group(2))
+    if m:
+        out["open"] = norm(m.group(2))
 
     # low
     m = re.search(r"\b(low|l)\s+([\d\.,]+)", t)
-    if m: out["low"] = norm(m.group(2))
+    if m:
+        out["low"] = norm(m.group(2))
 
     # high
     m = re.search(r"\b(high|h)\s+([\d\.,]+)", t)
-    if m: out["high"] = norm(m.group(2))
+    if m:
+        out["high"] = norm(m.group(2))
 
     # close
     m = re.search(r"\b(close|c)\s+([\d\.,]+)", t)
-    if m: out["close"] = norm(m.group(2))
+    if m:
+        out["close"] = norm(m.group(2))
 
     # ma20
     m = re.search(r"ma20\s+([\d\.,]+)", t)
-    if m: out["ma20"] = norm(m.group(1))
+    if m:
+        out["ma20"] = norm(m.group(1))
 
-    # dema9 — POPRAWIONY
+    # dema9
     m = re.search(r"dema9\s+([\d\.,]+)", t)
-    if m: out["dema9"] = norm(m.group(1))
+    if m:
+        out["dema9"] = norm(m.group(1))
 
     # rsi
     m = re.search(r"rsi\s+([\d\.,]+)", t)
-    if m: out["rsi"] = norm(m.group(1))
+    if m:
+        out["rsi"] = norm(m.group(1))
 
     # volume
     m = re.search(r"(wolumen|volume)\s+([\d\.,]+)", t)
-    if m: out["volume"] = norm(m.group(2))
+    if m:
+        out["volume"] = norm(m.group(2))
 
     # after price
     m = re.search(r"(after|after price|after hours|po godzinie)\s+([\d\.,]+)", t)
-    if m: out["after_price"] = norm(m.group(2))
+    if m:
+        out["after_price"] = norm(m.group(2))
 
     out["interval"] = extract_interval(t)
 
@@ -174,13 +192,14 @@ def parse_piece(text: str):
 
 
 # ---------------------------------------------------------
-# SYSTEM 4.5 LOGIC
+# SYSTEM 4.5 LOGIC (bez przefiltrowania)
 # ---------------------------------------------------------
-def system_45_logic(d):
+def system_45_logic(d: dict):
     o, c, ma, de = d["open"], d["close"], d["ma20"], d["dema9"]
     if None in (o, c, ma, de):
         return None, "Brak kompletu danych do sygnału."
 
+    # poniżej MA20 i DEMA9
     if c < ma and c < de:
         diff_ma = abs(c - ma) / c
         diff_de = abs(c - de) / c
@@ -189,6 +208,7 @@ def system_45_logic(d):
         else:
             return "SELL", "Cena poniżej MA20 i DEMA9 — trend spadkowy."
 
+    # powyżej MA20 i DEMA9
     if c > ma and c > de:
         diff_ma = abs(c - ma) / c
         diff_de = abs(c - de) / c
@@ -197,15 +217,19 @@ def system_45_logic(d):
         else:
             return "BUY", "Cena powyżej MA20 i DEMA9 — trend wzrostowy."
 
+    # prawie BUY
     if c > ma and c <= de * 1.002:
         return "PRAWIE BUY", "Cena nad MA20, blisko DEMA9 — prawie sygnał BUY."
 
+    # prawie SELL
     if c < ma and c >= de * 0.998:
         return "PRAWIE SELL", "Cena pod MA20, blisko DEMA9 — prawie sygnał SELL."
 
+    # reset
     if (de < c < ma) or (ma < c < de):
         return "RESET", "Cena wróciła do środka — reset trendu."
 
+    # prawie reset
     if abs(c - ma) < 0.001 * c or abs(c - de) < 0.001 * c:
         return "PRAWIE RESET", "Cena bardzo blisko środka — prawie reset."
 
@@ -215,7 +239,7 @@ def system_45_logic(d):
 # ---------------------------------------------------------
 # DYNAMIC TP3
 # ---------------------------------------------------------
-def dynamic_tp3(d):
+def dynamic_tp3(d: dict):
     c, ma, de = d["close"], d["ma20"], d["dema9"]
     if None in (c, ma, de):
         return None
@@ -234,9 +258,30 @@ def dynamic_tp3(d):
 
 
 # ---------------------------------------------------------
+# WIDEŁKI (tylko BUY / PRAWIE BUY / CZEKAJ DO BUY)
+# ---------------------------------------------------------
+def apply_widelki(state: dict):
+    sig = state.get("signal")
+    lo, hi = state.get("low"), state.get("high")
+
+    if sig in ("BUY", "PRAWIE BUY", "CZEKAJ DO BUY") and lo is not None and hi is not None:
+        rng = hi - lo
+        w_low = lo + rng * 0.20
+        w_high = lo + rng * 0.35
+        state["low"] = round(w_low, 2)
+        state["high"] = round(w_high, 2)
+    else:
+        # przy CZEKAJ / RESET / SELL widełki niepotrzebne
+        state["low"] = None
+        state["high"] = None
+
+    return state
+
+
+# ---------------------------------------------------------
 # BRAKUJĄCE POLA
 # ---------------------------------------------------------
-def missing_fields(d):
+def missing_fields(d: dict):
     required = ["open", "low", "high", "close", "ma20", "dema9"]
     return [k for k in required if d.get(k) is None]
 
@@ -244,7 +289,7 @@ def missing_fields(d):
 # ---------------------------------------------------------
 # KORELACJA KGHM–COPPER
 # ---------------------------------------------------------
-def apply_correlation(memory, state, ticker):
+def apply_correlation(memory: dict, state: dict, ticker: str):
     if ticker != "KGHM":
         return state
 
@@ -308,7 +353,7 @@ def voice_parse(req: VoiceRequest):
 
     state = memory[key]
 
-    for k in ["open","high","low","close","ma20","dema9","rsi","volume","after_price"]:
+    for k in ["open", "high", "low", "close", "ma20", "dema9", "rsi", "volume", "after_price"]:
         if piece.get(k) is not None:
             state[k] = piece[k]
 
@@ -324,14 +369,18 @@ def voice_parse(req: VoiceRequest):
     if missing:
         state["signal"] = None
         state["comment"] = "Brakuje: " + ", ".join(missing)
+        state["tp3"] = None
+        # widełki nie mają sensu bez kompletu danych
+        state["low"] = None
+        state["high"] = None
     else:
         sig, com = system_45_logic(state)
         state["signal"] = sig
         state["comment"] = com
 
         state["tp3"] = dynamic_tp3(state)
-
         state = apply_correlation(memory, state, ticker)
+        state = apply_widelki(state)
 
     last_used_key = key
     return state
