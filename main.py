@@ -19,11 +19,9 @@ app.add_middleware(
 class VoiceRequest(BaseModel):
     text: str
 
-
 class DeleteRequest(BaseModel):
     ticker: str
     interval: str | None = None
-
 
 # ---------------------------------------------------------
 # STAN PUSTY
@@ -41,27 +39,13 @@ def empty_state(ticker, interval):
         "rsi": None,
         "volume": None,
         "entry": None,
-        "after_price": None,
         "signal": None,
         "tp3": None,
         "comment": "Czekam na dane…",
     }
 
-
 memory = {}
 last_used_key = None
-
-# ---------------------------------------------------------
-# ZABRONIONE SŁOWA
-# ---------------------------------------------------------
-BAD_WORDS = {
-    "o", "l", "h", "c",
-    "m",
-    "ma", "ma20", "dema", "dema9",
-    "rsi", "wolumen", "volume", "entry", "usuń", "usun",
-    "open", "low", "high", "close", "cena",
-    "m1", "m5", "m15", "m30", "h1", "h4", "d1", "w1",
-}
 
 # ---------------------------------------------------------
 # FUNKCJE POMOCNICZE
@@ -75,163 +59,163 @@ def norm(x):
     except:
         return None
 
-
 def extract_ticker(text: str):
     for w in text.split():
-        w_clean = w.lower()
-        if w_clean in BAD_WORDS:
-            continue
-        if re.fullmatch(r"[A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]{2,}", w_clean):
+        if re.fullmatch(r"[A-Za-z0-9]{2,}", w):
             return w.upper()
     return None
 
-
 def extract_interval(t: str):
-    t = t.lower()
-    if "m15" in t:
-        return "M15"
-    if "m5" in t:
-        return "M5"
-    if "m1" in t:
-        return "M1"
-    if "m30" in t:
-        return "M30"
-    if "h1" in t:
-        return "H1"
-    if "h4" in t:
-        return "H4"
-    if "d1" in t:
-        return "D1"
+    t = t.replace(" ", "").lower()
+    if "m15" in t: return "M15"
+    if "m5" in t: return "M5"
+    if "m1" in t: return "M1"
+    if "m30" in t: return "M30"
+    if "h1" in t: return "H1"
+    if "h4" in t: return "H4"
+    if "d1" in t: return "D1"
     return None
 
+# ---------------------------------------------------------
+# PARSER — CZYSTY
+# ---------------------------------------------------------
+def parse_piece(text: str):
+    t = text.lower()
+    out = {}
+
+    # entry
+    m = re.search(r"entry\s*([\d\.,]+)", t)
+    if m: out["entry"] = norm(m.group(1))
+
+    # open
+    m = re.search(r"open\s*([\d\.,]+)", t)
+    if m: out["open"] = norm(m.group(1))
+
+    # high
+    m = re.search(r"high\s*([\d\.,]+)", t)
+    if m: out["high"] = norm(m.group(1))
+
+    # low
+    m = re.search(r"low\s*([\d\.,]+)", t)
+    if m: out["low"] = norm(m.group(1))
+
+    # close
+    m = re.search(r"close\s*([\d\.,]+)", t)
+    if m: out["close"] = norm(m.group(1))
+
+    # ma20
+    m = re.search(r"ma20\s*([\d\.,]+)", t)
+    if m: out["ma20"] = norm(m.group(1))
+
+    # dema9
+    m = re.search(r"dema9\s*([\d\.,]+)", t)
+    if m: out["dema9"] = norm(m.group(1))
+
+    # rsi
+    m = re.search(r"rsi\s*([\d\.,]+)", t)
+    if m: out["rsi"] = norm(m.group(1))
+
+    # volume
+    m = re.search(r"(volume|wolumen)\s*([\d\.,]+)", t)
+    if m: out["volume"] = norm(m.group(2))
+
+    out["interval"] = extract_interval(t)
+    return out
 
 # ---------------------------------------------------------
-# SYSTEM 4.5 LOGIC (bez przefiltrowania)
+# SYSTEM 4.5 LOGIC
 # ---------------------------------------------------------
-def system_45_logic(d: dict):
+def system_45_logic(d):
     o, c, ma, de = d["open"], d["close"], d["ma20"], d["dema9"]
     if None in (o, c, ma, de):
         return None, "Brak kompletu danych do sygnału."
 
-    # poniżej MA20 i DEMA9
+    # SELL
     if c < ma and c < de:
-        diff_ma = abs(c - ma) / c
-        diff_de = abs(c - de) / c
-        if diff_ma < 0.0015 or diff_de < 0.0015:
-            return "CZEKAJ DO BUY", "Rynek blisko wybicia w górę — przygotuj się na BUY."
-        else:
-            return "SELL", "Cena poniżej MA20 i DEMA9 — trend spadkowy."
+        if abs(c - ma)/c < 0.0015 or abs(c - de)/c < 0.0015:
+            return "CZEKAJ DO BUY", "Blisko wybicia w górę."
+        return "SELL", "Cena poniżej MA20 i DEMA9."
 
-    # powyżej MA20 i DEMA9
+    # BUY
     if c > ma and c > de:
-        diff_ma = abs(c - ma) / c
-        diff_de = abs(c - de) / c
-        if diff_ma < 0.0015 or diff_de < 0.0015:
-            return "CZEKAJ DO SELL", "Rynek blisko wybicia w dół — przygotuj się na SELL."
-        else:
-            return "BUY", "Cena powyżej MA20 i DEMA9 — trend wzrostowy."
+        if abs(c - ma)/c < 0.0015 or abs(c - de)/c < 0.0015:
+            return "CZEKAJ DO SELL", "Blisko wybicia w dół."
+        return "BUY", "Cena powyżej MA20 i DEMA9."
 
-    # prawie BUY
+    # PRAWIE BUY
     if c > ma and c <= de * 1.002:
-        return "PRAWIE BUY", "Cena nad MA20, blisko DEMA9 — prawie sygnał BUY."
+        return "PRAWIE BUY", "Blisko BUY."
 
-    # prawie SELL
+    # PRAWIE SELL
     if c < ma and c >= de * 0.998:
-        return "PRAWIE SELL", "Cena pod MA20, blisko DEMA9 — prawie sygnał SELL."
+        return "PRAWIE SELL", "Blisko SELL."
 
-    # reset
+    # RESET
     if (de < c < ma) or (ma < c < de):
-        return "RESET", "Cena wróciła do środka — reset trendu."
+        return "RESET", "Cena w środku."
 
-    # prawie reset
-    if abs(c - ma) < 0.001 * c or abs(c - de) < 0.001 * c:
-        return "PRAWIE RESET", "Cena bardzo blisko środka — prawie reset."
+    # PRAWIE RESET
+    if abs(c - ma) < 0.001*c or abs(c - de) < 0.001*c:
+        return "PRAWIE RESET", "Blisko środka."
 
-    return "CZEKAJ", "Brak wyraźnego sygnału."
-
+    return "CZEKAJ", "Brak sygnału."
 
 # ---------------------------------------------------------
-# DYNAMIC TP3
+# TP3
 # ---------------------------------------------------------
-def dynamic_tp3(d: dict):
+def dynamic_tp3(d):
     c, ma, de = d["close"], d["ma20"], d["dema9"]
     if None in (c, ma, de):
         return None
-
-    trend_strength = abs(ma - de)
     mid = (ma + de) / 2
-    distance = abs(c - mid)
-    tp3 = distance + trend_strength
-
+    dist = abs(c - mid)
+    strength = abs(ma - de)
+    tp = dist + strength
     if d["signal"] == "BUY":
-        return round(c + tp3, 2)
+        return round(c + tp, 2)
     if d["signal"] == "SELL":
-        return round(c - tp3, 2)
-
+        return round(c - tp, 2)
     return None
 
-
 # ---------------------------------------------------------
-# WIDEŁKI (tylko BUY / PRAWIE BUY / CZEKAJ DO BUY)
+# WIDEŁKI
 # ---------------------------------------------------------
-def apply_widelki(state: dict):
-    sig = state.get("signal")
-    lo, hi = state.get("low"), state.get("high")
+def apply_widelki(state):
+    sig = state["signal"]
+    lo, hi = state["low"], state["high"]
 
     if sig in ("BUY", "PRAWIE BUY", "CZEKAJ DO BUY") and lo is not None and hi is not None:
         rng = hi - lo
-        w_low = lo + rng * 0.20
-        w_high = lo + rng * 0.35
-        state["low"] = round(w_low, 2)
-        state["high"] = round(w_high, 2)
+        state["low"] = round(lo + rng*0.20, 2)
+        state["high"] = round(lo + rng*0.35, 2)
     else:
-        # przy CZEKAJ / RESET / SELL widełki niepotrzebne
         state["low"] = None
         state["high"] = None
 
     return state
 
-
 # ---------------------------------------------------------
 # BRAKUJĄCE POLA
 # ---------------------------------------------------------
-def missing_fields(d: dict):
-    required = ["open", "low", "high", "close", "ma20", "dema9"]
-    return [k for k in required if d.get(k) is None]
-
+def missing_fields(d):
+    req = ["open", "low", "high", "close", "ma20", "dema9"]
+    return [k for k in req if d.get(k) is None]
 
 # ---------------------------------------------------------
-# KORELACJA KGHM–COPPER
+# KORELACJA
 # ---------------------------------------------------------
-def apply_correlation(memory: dict, state: dict, ticker: str):
+def apply_correlation(memory, state, ticker):
     if ticker != "KGHM":
         return state
-
     if "COPPER|M5" not in memory:
         return state
-
-    copper = memory["COPPER|M5"]
-    sig = copper.get("signal")
-
-    if not sig:
-        return state
-
-    if sig == "BUY":
-        state["comment"] += " | Korelacja: Copper BUY — wzmocnienie sygnału."
-    elif sig == "SELL":
-        state["comment"] += " | Korelacja: Copper SELL — ryzyko spadku."
-    elif sig == "PRAWIE BUY":
-        state["comment"] += " | Korelacja: Copper prawie BUY."
-    elif sig == "PRAWIE SELL":
-        state["comment"] += " | Korelacja: Copper prawie SELL."
-    elif sig == "RESET":
-        state["comment"] += " | Korelacja: Copper reset — możliwa zmiana kierunku."
-
+    sig = memory["COPPER|M5"].get("signal")
+    if sig:
+        state["comment"] += f" | Korelacja: Copper {sig}"
     return state
 
-
 # ---------------------------------------------------------
-# GŁÓWNY ENDPOINT
+# ENDPOINT
 # ---------------------------------------------------------
 @app.post("/voice-parse")
 def voice_parse(req: VoiceRequest):
@@ -250,58 +234,45 @@ def voice_parse(req: VoiceRequest):
 
     if not ticker:
         if not last_used_key:
-            return {"ticker": None, "comment": "Brak tickera — podaj nazwę spółki."}
+            return {"ticker": None, "comment": "Brak tickera."}
         ticker, interval = last_used_key.split("|")
 
     key = f"{ticker}|{interval}"
-
-    if piece.get("delete"):
-        if key in memory:
-            del memory[key]
-        if last_used_key == key:
-            last_used_key = None
-        return {"ticker": ticker, "interval": interval, "deleted": True}
 
     if key not in memory:
         memory[key] = empty_state(ticker, interval)
 
     state = memory[key]
 
-    for k in ["open", "high", "low", "close", "ma20", "dema9", "rsi", "volume", "after_price"]:
+    # update fields
+    for k in ["open","high","low","close","ma20","dema9","rsi","volume","entry"]:
         if piece.get(k) is not None:
             state[k] = piece[k]
 
-    if piece.get("entry") is not None:
-        if piece["entry"] == 0:
-            state["entry"] = None
-            state["signal"] = "CZEKAJ"
-            state["comment"] = "Pozycja zamknięta."
-        else:
-            state["entry"] = piece["entry"]
-
-    missing = missing_fields(state)
-    if missing:
+    # missing?
+    miss = missing_fields(state)
+    if miss:
         state["signal"] = None
-        state["comment"] = "Brakuje: " + ", ".join(missing)
+        state["comment"] = "Brakuje: " + ", ".join(miss)
         state["tp3"] = None
-        # widełki nie mają sensu bez kompletu danych
         state["low"] = None
         state["high"] = None
-    else:
-        sig, com = system_45_logic(state)
-        state["signal"] = sig
-        state["comment"] = com
+        return state
 
-        state["tp3"] = dynamic_tp3(state)
-        state = apply_correlation(memory, state, ticker)
-        state = apply_widelki(state)
+    # logic
+    sig, com = system_45_logic(state)
+    state["signal"] = sig
+    state["comment"] = com
+
+    state["tp3"] = dynamic_tp3(state)
+    state = apply_correlation(memory, state, ticker)
+    state = apply_widelki(state)
 
     last_used_key = key
     return state
 
-
 # ---------------------------------------------------------
-# USUWANIE TICKERA
+# DELETE
 # ---------------------------------------------------------
 @app.post("/voice-parse/delete")
 def delete_ticker(req: DeleteRequest):
@@ -311,5 +282,5 @@ def delete_ticker(req: DeleteRequest):
         del memory[key]
         if last_used_key == key:
             last_used_key = None
-        return {"status": "deleted", "key": key}
-    return {"status": "not_found", "key": key}
+        return {"status": "deleted"}
+    return {"status": "not_found"}
