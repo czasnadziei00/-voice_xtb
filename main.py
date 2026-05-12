@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Optional, Dict
 
 app = FastAPI()
 
@@ -11,9 +12,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# prosta pamięć w backendzie (entry, ostatni sygnał itd.)
+memory: Dict[str, Dict] = {}
+
 class VoiceRecord(BaseModel):
     ticker: str
     interval: str
+    time: str
     open: float
     low: float
     high: float
@@ -23,47 +28,54 @@ class VoiceRecord(BaseModel):
     dema9: float
     rsi: float
 
-@app.post("/analyze")
-def analyze(record: VoiceRecord):
+class DeleteReq(BaseModel):
+    ticker: str
 
-    close = record.close
-    ma20 = record.ma20
-    dema9 = record.dema9
-    rsi = record.rsi
-    volume = record.volume
+@app.post("/voice-parse")
+def voice_parse(rec: VoiceRecord):
+    t = rec.ticker.upper()
 
-    # PROSTA LOGIKA (placeholder)
-    if close > ma20 and rsi > 55:
+    # prosta logika sygnału (placeholder pod Twój system)
+    if rec.close > rec.ma20 and rec.rsi > 55:
         signal = "BUY"
-    elif close < ma20 and rsi < 45:
+    elif rec.close < rec.ma20 and rec.rsi < 45:
         signal = "SELL"
     else:
         signal = "NEUTRAL"
 
-    # TP3
-    if signal == "BUY":
-        tp3 = round(close * 1.03, 2)
-    elif signal == "SELL":
-        tp3 = round(close * 0.97, 2)
-    else:
-        tp3 = None
+    # entry – np. close
+    entry = rec.close
 
-    # Widełki
-    widelki = [
-        round(close * 0.99, 2),
-        round(close * 1.01, 2)
-    ]
+    # komentarz
+    comment = (
+        f"{t} {rec.interval} {rec.time} | "
+        f"close={rec.close}, ma20={rec.ma20}, dema9={rec.dema9}, "
+        f"rsi={rec.rsi}, vol={rec.volume}, signal={signal}"
+    )
 
-    return {
-        "ticker": record.ticker,
-        "interval": record.interval,
-        "close": close,
+    data = {
+        "ticker": t,
+        "interval": rec.interval,
+        "time": rec.time,
+        "open": rec.open,
+        "low": rec.low,
+        "high": rec.high,
+        "close": rec.close,
+        "volume": rec.volume,
+        "ma20": rec.ma20,
+        "dema9": rec.dema9,
+        "rsi": rec.rsi,
+        "entry": entry,
         "signal": signal,
-        "tp3": tp3,
-        "widelki": widelki,
-        "rsi": rsi,
-        "ma20": ma20,
-        "dema9": dema9,
-        "volume": volume,
-        "comment": f"Sygnał={signal}, RSI={rsi}, MA20={ma20}, DEMA9={dema9}, Vol={volume}"
+        "comment": comment,
     }
+
+    memory[t] = data
+    return data
+
+@app.post("/voice-parse/delete")
+def voice_delete(req: DeleteReq):
+    t = req.ticker.upper()
+    if t in memory:
+        del memory[t]
+    return {"ticker": t, "deleted": True}
