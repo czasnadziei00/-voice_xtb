@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, Dict
+from typing import Dict
 
 app = FastAPI()
 
@@ -12,7 +12,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# prosta pamięć w backendzie (entry, ostatni sygnał itd.)
 memory: Dict[str, Dict] = {}
 
 class VoiceRecord(BaseModel):
@@ -31,11 +30,12 @@ class VoiceRecord(BaseModel):
 class DeleteReq(BaseModel):
     ticker: str
 
+
 @app.post("/voice-parse")
 def voice_parse(rec: VoiceRecord):
     t = rec.ticker.upper()
 
-    # prosta logika sygnału (placeholder pod Twój system)
+    # ===== SYGNAŁ =====
     if rec.close > rec.ma20 and rec.rsi > 55:
         signal = "BUY"
     elif rec.close < rec.ma20 and rec.rsi < 45:
@@ -43,10 +43,10 @@ def voice_parse(rec: VoiceRecord):
     else:
         signal = "NEUTRAL"
 
-    # entry – np. close
+    # ===== ENTRY =====
     entry = rec.close
 
-    # komentarz
+    # ===== KOMENTARZ =====
     comment = (
         f"{t} {rec.interval} {rec.time} | "
         f"close={rec.close}, ma20={rec.ma20}, dema9={rec.dema9}, "
@@ -72,6 +72,7 @@ def voice_parse(rec: VoiceRecord):
 
     memory[t] = data
     return data
+
 
 @app.post("/voice-parse/delete")
 def voice_delete(req: DeleteReq):
