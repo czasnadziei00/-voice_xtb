@@ -51,7 +51,7 @@ memory = {}
 last_used_key = None
 
 # ---------------------------------------------------------
-# ZABRONIONE SŁOWA (nie ticker)
+# ZABRONIONE SŁOWA
 # ---------------------------------------------------------
 BAD_WORDS = {
     "o","l","h","c",
@@ -59,11 +59,7 @@ BAD_WORDS = {
     "ma","ma20","dema","dema9",
     "rsi","wolumen","volume","entry","usuń","usun",
     "open","low","high","close","cena",
-    "m1","m5","m15","m30","h1","h4","d1","w1","hej","em","em1","em5","em15",
-    "hi","haj","hai","hay","hał","hajh","haih",
-    "loł","lowe","lołe","lołł","lołu","loło","lołej","loły",
-    "bema","bema9","b ma","b ema","beema","beema9","bimma","bemma","bem ma","b e m a","b e m a 9",
-    "clos","closs","closse","cloos","cloose","clołs","klołs","kloz","kloze","klaus",
+    "m1","m5","m15","m30","h1","h4","d1","w1",
 }
 
 # ---------------------------------------------------------
@@ -102,7 +98,7 @@ def extract_interval(t):
 
 
 # ---------------------------------------------------------
-# AUTOKOREKTA PL MODE
+# AUTOKOREKTA PL
 # ---------------------------------------------------------
 def autocorrect_indicators(text: str):
     t = text.lower().strip()
@@ -123,7 +119,7 @@ def autocorrect_indicators(text: str):
 
 
 # ---------------------------------------------------------
-# PARSER
+# PARSER — WZMOCNIONY
 # ---------------------------------------------------------
 def parse_piece(text: str):
     t = autocorrect_indicators(text.lower())
@@ -132,34 +128,44 @@ def parse_piece(text: str):
     if "usuń" in t or "usun" in t:
         out["delete"] = True
 
-    m = re.search(r"entry\s*([\d\., ]+)", t)
+    # entry
+    m = re.search(r"entry\s+([\d\.,]+)", t)
     if m: out["entry"] = norm(m.group(1))
 
-    m = re.search(r"\b(open|o)\s+([\d\., ]+)", t)
+    # open
+    m = re.search(r"\b(open|o)\s+([\d\.,]+)", t)
     if m: out["open"] = norm(m.group(2))
 
-    m = re.search(r"\b(low|l)\s+([\d\., ]+)", t)
+    # low
+    m = re.search(r"\b(low|l)\s+([\d\.,]+)", t)
     if m: out["low"] = norm(m.group(2))
 
-    m = re.search(r"\b(high|h)\s+([\d\., ]+)", t)
+    # high
+    m = re.search(r"\b(high|h)\s+([\d\.,]+)", t)
     if m: out["high"] = norm(m.group(2))
 
-    m = re.search(r"ma20\s*([\d\., ]+)", t)
-    if m: out["ma20"] = norm(m.group(1))
-
-    m = re.search(r"dema9\s*([\d\., ]+)", t)
-    if m: out["dema9"] = norm(m.group(1))
-
-    m = re.search(r"rsi\s*([\d\., ]+)", t)
-    if m: out["rsi"] = norm(m.group(1))
-
-    m = re.search(r"(wolumen|volume)\s*([\d\., ]+)", t)
-    if m: out["volume"] = norm(m.group(2))
-
-    m = re.search(r"(close)\s+([\d\., ]+)", t)
+    # close
+    m = re.search(r"\b(close|c)\s+([\d\.,]+)", t)
     if m: out["close"] = norm(m.group(2))
 
-    m = re.search(r"(after|after price|after hours|po godzinie)\s*([\d\., ]+)", t)
+    # ma20
+    m = re.search(r"ma20\s+([\d\.,]+)", t)
+    if m: out["ma20"] = norm(m.group(1))
+
+    # dema9 — POPRAWIONY
+    m = re.search(r"dema9\s+([\d\.,]+)", t)
+    if m: out["dema9"] = norm(m.group(1))
+
+    # rsi
+    m = re.search(r"rsi\s+([\d\.,]+)", t)
+    if m: out["rsi"] = norm(m.group(1))
+
+    # volume
+    m = re.search(r"(wolumen|volume)\s+([\d\.,]+)", t)
+    if m: out["volume"] = norm(m.group(2))
+
+    # after price
+    m = re.search(r"(after|after price|after hours|po godzinie)\s+([\d\.,]+)", t)
     if m: out["after_price"] = norm(m.group(2))
 
     out["interval"] = extract_interval(t)
@@ -228,7 +234,7 @@ def dynamic_tp3(d):
 
 
 # ---------------------------------------------------------
-# BRAKUJĄCE POLA — LIVE INFO
+# BRAKUJĄCE POLA
 # ---------------------------------------------------------
 def missing_fields(d):
     required = ["open", "low", "high", "close", "ma20", "dema9"]
@@ -314,7 +320,6 @@ def voice_parse(req: VoiceRequest):
         else:
             state["entry"] = piece["entry"]
 
-    # 🔥 LIVE BRAKI
     missing = missing_fields(state)
     if missing:
         state["signal"] = None
