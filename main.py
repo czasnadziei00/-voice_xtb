@@ -12,8 +12,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# PAMIĘĆ MULTI‑TF:
-# memory[ticker][interval] = {...}
+# PAMIĘĆ MULTI‑TF
 memory: Dict[str, Dict[str, Dict]] = {}
 
 
@@ -36,7 +35,7 @@ class DeleteReq(BaseModel):
 
 
 # ======================================================
-#  LOGIKA SYGNAŁU (TA, KTÓRA DZIAŁAŁA)
+#  LOGIKA SYGNAŁU — SPRAWDZONA I POPRAWNA
 # ======================================================
 
 def calc_signal(rec: VoiceRecord) -> str:
@@ -45,18 +44,23 @@ def calc_signal(rec: VoiceRecord) -> str:
     de = rec.dema9
     r = rec.rsi
 
+    # BUY
     if c > ma and c > de and r >= 60:
         return "BUY"
 
+    # PRAWIE BUY
     if c > ma and 50 <= r < 60:
         return "PRAWIE BUY"
 
+    # SELL
     if c < ma and c < de and r <= 40:
         return "SELL"
 
+    # CZEKAJ DO (ruch boczny)
     if abs(c - ma) / ma < 0.003 and 45 <= r <= 55:
         return "CZEKAJ DO"
 
+    # neutralne
     return "CZEKAJ"
 
 
