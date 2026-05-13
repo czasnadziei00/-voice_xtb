@@ -44,19 +44,19 @@ def calc_signal(rec: VoiceRecord) -> str:
     de = rec.dema9
     r = rec.rsi
 
-    # BUY
+    # BUY — pełny impuls wzrostowy
     if c > ma and c > de and r >= 60:
         return "BUY"
 
-    # PRAWIE BUY
+    # PRAWIE BUY — przygotowanie do wybicia
     if c > ma and 50 <= r < 60:
         return "PRAWIE BUY"
 
-    # SELL
+    # SELL — pełny impuls spadkowy
     if c < ma and c < de and r <= 40:
         return "SELL"
 
-    # CZEKAJ DO (ruch boczny)
+    # CZEKAJ DO — ruch boczny, brak kierunku
     if abs(c - ma) / ma < 0.003 and 45 <= r <= 55:
         return "CZEKAJ DO"
 
