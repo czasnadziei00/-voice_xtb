@@ -1,18 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Dict
 
 app = FastAPI()
-
-# ======================================================
-#  STATIC FILES — FRONTEND
-# ======================================================
-# To wystawia katalog "frontend" jako pliki statyczne
-# i pozwala ładować voice.js z:
-#   /frontend/js/voice.js
-app.mount("/frontend", StaticFiles(directory="frontend"), name="frontend")
 
 # ======================================================
 #  CORS
@@ -60,23 +51,18 @@ def calc_signal(rec: VoiceRecord) -> str:
     de = rec.dema9
     r = rec.rsi
 
-    # mocny BUY
     if c > ma and c > de and r >= 60:
         return "BUY"
 
-    # prawie buy
     if c > ma and 50 <= r < 60:
         return "PRAWIE BUY"
 
-    # mocny SELL
     if c < ma and c < de and r <= 40:
         return "SELL"
 
-    # czekaj do
     if abs(c - ma) / ma < 0.003 and 45 <= r <= 55:
         return "CZEKAJ DO"
 
-    # neutralne czekanie
     return "CZEKAJ"
 
 
