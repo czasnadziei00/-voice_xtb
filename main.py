@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Dict
+from typing import Dict, Optional
 
 app = FastAPI()
 
@@ -12,12 +12,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-memory: Dict[str, Dict] = {}
+# PAMIĘĆ MULTI‑TF:
+# memory[ticker][interval] = {...}
+memory: Dict[str, Dict[str, Dict]] = {}
+
 
 class VoiceRecord(BaseModel):
     ticker: str
     interval: str
-    time: str
+    time: Optional[str] = None
     open: float
     low: float
     high: float
@@ -27,8 +30,14 @@ class VoiceRecord(BaseModel):
     dema9: float
     rsi: float
 
+
 class DeleteReq(BaseModel):
     ticker: str
+
+
+# ======================================================
+#  LOGIKA SYGNAŁU (TA, KTÓRA DZIAŁAŁA)
+# ======================================================
 
 def calc_signal(rec: VoiceRecord) -> str:
     c = rec.close
@@ -38,29 +47,41 @@ def calc_signal(rec: VoiceRecord) -> str:
 
     if c > ma and c > de and r >= 60:
         return "BUY"
+
     if c > ma and 50 <= r < 60:
         return "PRAWIE BUY"
+
     if c < ma and c < de and r <= 40:
         return "SELL"
+
     if abs(c - ma) / ma < 0.003 and 45 <= r <= 55:
         return "CZEKAJ DO"
+
     return "CZEKAJ"
+
+
+# ======================================================
+#  GŁÓWNY ENDPOINT
+# ======================================================
 
 @app.post("/voice-parse")
 def voice_parse(rec: VoiceRecord):
     t = rec.ticker.upper()
+    tf = rec.interval.upper()
+
     signal = calc_signal(rec)
     entry = float(rec.close)
 
+    # komentarz diagnostyczny
     comment = (
-        f"{t} {rec.interval} {rec.time} | "
+        f"{t} {tf} {rec.time} | "
         f"close={rec.close}, ma20={rec.ma20}, dema9={rec.dema9}, "
         f"rsi={rec.rsi}, vol={rec.volume}, signal={signal}"
     )
 
     data = {
         "ticker": t,
-        "interval": rec.interval,
+        "interval": tf,
         "time": rec.time,
         "open": rec.open,
         "low": rec.low,
@@ -75,8 +96,18 @@ def voice_parse(rec: VoiceRecord):
         "comment": comment,
     }
 
-    memory[t] = data
+    # MULTI‑TF ZAPIS
+    if t not in memory:
+        memory[t] = {}
+
+    memory[t][tf] = data
+
     return data
+
+
+# ======================================================
+#  USUWANIE TICKERA
+# ======================================================
 
 @app.post("/voice-parse/delete")
 def voice_delete(req: DeleteReq):
