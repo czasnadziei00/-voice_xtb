@@ -70,7 +70,6 @@ def voice_parse(rec: VoiceRecord):
     tf = rec.interval.upper()
 
     signal = calc_signal(rec)
-    entry = float(rec.close)
 
     # komentarz diagnostyczny
     comment = (
