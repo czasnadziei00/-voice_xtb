@@ -1,10 +1,22 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Dict
 
 app = FastAPI()
 
+# ======================================================
+#  STATIC FILES — FRONTEND
+# ======================================================
+# To wystawia katalog "frontend" jako pliki statyczne
+# i pozwala ładować voice.js z:
+#   /frontend/js/voice.js
+app.mount("/frontend", StaticFiles(directory="frontend"), name="frontend")
+
+# ======================================================
+#  CORS
+# ======================================================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -12,9 +24,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ======================================================
+#  PAMIĘĆ
+# ======================================================
 memory: Dict[str, Dict] = {}
 
 
+# ======================================================
+#  MODELE
+# ======================================================
 class VoiceRecord(BaseModel):
     ticker: str
     interval: str
@@ -33,11 +51,10 @@ class DeleteReq(BaseModel):
     ticker: str
 
 
+# ======================================================
+#  LOGIKA SYGNAŁU 6.5 PRO
+# ======================================================
 def calc_signal(rec: VoiceRecord) -> str:
-    """
-    Logika sygnału 6.5 PRO pod frontend:
-    Zwraca tylko: BUY / SELL / PRAWIE BUY / CZEKAJ DO / CZEKAJ / RESET
-    """
     c = rec.close
     ma = rec.ma20
     de = rec.dema9
@@ -47,7 +64,7 @@ def calc_signal(rec: VoiceRecord) -> str:
     if c > ma and c > de and r >= 60:
         return "BUY"
 
-    # prawie buy (popyt wraca, ale jeszcze nie pełny sygnał)
+    # prawie buy
     if c > ma and 50 <= r < 60:
         return "PRAWIE BUY"
 
@@ -55,7 +72,7 @@ def calc_signal(rec: VoiceRecord) -> str:
     if c < ma and c < de and r <= 40:
         return "SELL"
 
-    # czekaj do (punkt decyzyjny, blisko średnich)
+    # czekaj do
     if abs(c - ma) / ma < 0.003 and 45 <= r <= 55:
         return "CZEKAJ DO"
 
@@ -63,13 +80,13 @@ def calc_signal(rec: VoiceRecord) -> str:
     return "CZEKAJ"
 
 
+# ======================================================
+#  ENDPOINT: PARSOWANIE
+# ======================================================
 @app.post("/voice-parse")
 def voice_parse(rec: VoiceRecord):
     t = rec.ticker.upper()
-
     signal = calc_signal(rec)
-
-    # ENTRY = bieżące close (frontend i tak liczy TP)
     entry = float(rec.close)
 
     comment = (
@@ -99,6 +116,9 @@ def voice_parse(rec: VoiceRecord):
     return data
 
 
+# ======================================================
+#  ENDPOINT: DELETE
+# ======================================================
 @app.post("/voice-parse/delete")
 def voice_delete(req: DeleteReq):
     t = req.ticker.upper()
