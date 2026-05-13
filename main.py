@@ -14,6 +14,7 @@ app.add_middleware(
 
 memory: Dict[str, Dict] = {}
 
+
 class VoiceRecord(BaseModel):
     ticker: str
     interval: str
@@ -27,26 +28,50 @@ class VoiceRecord(BaseModel):
     dema9: float
     rsi: float
 
+
 class DeleteReq(BaseModel):
     ticker: str
+
+
+def calc_signal(rec: VoiceRecord) -> str:
+    """
+    Logika sygnału 6.5 PRO pod frontend:
+    Zwraca tylko: BUY / SELL / PRAWIE BUY / CZEKAJ DO / CZEKAJ / RESET
+    """
+    c = rec.close
+    ma = rec.ma20
+    de = rec.dema9
+    r = rec.rsi
+
+    # mocny BUY
+    if c > ma and c > de and r >= 60:
+        return "BUY"
+
+    # prawie buy (popyt wraca, ale jeszcze nie pełny sygnał)
+    if c > ma and 50 <= r < 60:
+        return "PRAWIE BUY"
+
+    # mocny SELL
+    if c < ma and c < de and r <= 40:
+        return "SELL"
+
+    # czekaj do (punkt decyzyjny, blisko średnich)
+    if abs(c - ma) / ma < 0.003 and 45 <= r <= 55:
+        return "CZEKAJ DO"
+
+    # neutralne czekanie
+    return "CZEKAJ"
 
 
 @app.post("/voice-parse")
 def voice_parse(rec: VoiceRecord):
     t = rec.ticker.upper()
 
-    # ===== SYGNAŁ =====
-    if rec.close > rec.ma20 and rec.rsi > 55:
-        signal = "BUY"
-    elif rec.close < rec.ma20 and rec.rsi < 45:
-        signal = "SELL"
-    else:
-        signal = "NEUTRAL"
+    signal = calc_signal(rec)
 
-    # ===== ENTRY =====
-    entry = rec.close
+    # ENTRY = bieżące close (frontend i tak liczy TP)
+    entry = float(rec.close)
 
-    # ===== KOMENTARZ =====
     comment = (
         f"{t} {rec.interval} {rec.time} | "
         f"close={rec.close}, ma20={rec.ma20}, dema9={rec.dema9}, "
