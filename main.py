@@ -91,7 +91,7 @@ def voice_parse(rec: VoiceRecord):
         "ma20": rec.ma20,
         "dema9": rec.dema9,
         "rsi": rec.rsi,
-        "entry": entry,
+        "entry": "",
         "signal": signal,
         "comment": comment,
     }
