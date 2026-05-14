@@ -5,8 +5,8 @@ from typing import Dict, Optional, List
 from datetime import datetime
 
 app = FastAPI(
-    title="VOICE XTB 7.4 PRO",
-    version="7.4.9"
+    title="VOICE XTB 7.5.3 PRO",
+    version="7.5.3"
 )
 
 # ======================================================
@@ -55,51 +55,46 @@ class DeleteReq(BaseModel):
     ticker: str
 
 # ======================================================
-#  UTILS
+#  PRO-COMMENT GENERATOR (SYGNAŁOWY)
 # ======================================================
-
-def normalize_tf(tf: str) -> str:
-    tf = tf.upper().strip()
-    if tf in ["5", "M5"]: return "M5"
-    if tf in ["15", "M15"]: return "M15"
-    if tf in ["H1", "1H", "60"]: return "H1"
-    return tf
-
-def validate_candle(rec: VoiceRecord):
-    if rec.high < rec.low:
-        raise HTTPException(status_code=400, detail="HIGH < LOW")
-    if not (rec.low <= rec.close <= rec.high):
-        raise HTTPException(status_code=400, detail="CLOSE poza zakresem świecy")
-    if not (0 <= rec.rsi <= 100):
-        raise HTTPException(status_code=400, detail="RSI poza zakresem 0-100")
-
-def ensure_time(rec: VoiceRecord):
-    if not rec.time:
-        rec.time = datetime.now().strftime("%H:%M")
 
 def generate_pro_comment(rec: VoiceRecord, history: List[Dict], signal: str) -> str:
     dir_tf = trend_direction(history)
-    trend_map = {"UP": "Wzrostowy", "DOWN": "Spadkowy", "NEUTRAL": "Boczny/Neutralny"}
-    t_dir = trend_map.get(dir_tf, "Neutralny")
+    trend_map = {"UP": "WZROSTOWY", "DOWN": "SPADKOWY", "NEUTRAL": "BOCZNY"}
+    t_dir = trend_map.get(dir_tf, "NEUTRALNY")
+    
     supp_min = round(rec.low * 0.998, 2)
     supp_max = round(rec.low, 2)
-    r = rec.rsi
-    rel = "Słabość (pod DEMA9)." if rec.close < rec.dema9 else "Siła (nad DEMA9)."
     
-    interp = "Rynek dąży do normalizacji."
-    if "BUY" in signal: interp = "Potwierdzona presja kupujących."
-    elif "SELL" in signal: interp = "Dominacja podaży."
+    r = rec.rsi
+    if r <= 30:
+        mom = f"RSI {r:.1f} - SKRAJNE WYPRZEDANIE. MOŻLIWA AKUMULACJA."
+    elif r >= 70:
+        mom = f"RSI {r:.1f} - SKRAJNE WYKUPIENIE. RYZYKO DYSTRYBUCJI."
+    else:
+        mom = f"RSI {r:.1f} - MOMENTUM STABILNE W STREFIE NEUTRALNEJ."
+
+    rel = "SILNA STRUKTURA POWYŻEJ DEMA9." if rec.close > rec.dema9 else "SŁABOŚĆ POD DEMA9 - MOŻLIWA KONTRA."
+    
+    if "BUY" in signal:
+        interp = "POTWIERDZONA PRESJA POPYTU. SZUKANIE WEJŚCIA W STRUKTURZE WZROSTOWEJ."
+    elif "SELL" in signal:
+        interp = "DOMINACJA PODAŻY. STRUKTURA SUGERUJE KONTYNUACJĘ SPADKÓW."
+    else:
+        interp = "BRAK KLAROWNEGO SYGNAŁU. RUCH W KONSOLIDACJI."
 
     return (
-        f"DIAGNOZA TRENDU: Kierunek {t_dir}. Struktura powyżej {supp_min}-{supp_max}.\n\n"
-        f"MOMENTUM RYNKOWE: RSI {r:.1f}.\n\n"
+        f"--- RAPORT ANALITYCZNY ---\n\n"
+        f"TREND GŁÓWNY: {t_dir}\n"
+        f"STREFA WSPARCIA: {supp_min} - {supp_max}\n\n"
+        f"MOMENTUM: {mom}\n"
         f"SIŁA RELATYWNA: {rel}\n\n"
         f"INTERPRETACJA: {interp}\n\n"
-        f"ZARZĄDZANIE RYZYKIEM: Kluczowe wsparcie: {supp_min}."
+        f"RYZYKO (STOP LOSS): OCHRONA PONIŻEJ POZIOMU {supp_min}."
     )
 
 # ======================================================
-#  HISTORIA I ANALIZA
+#  ANALIZA TECHNICZNA
 # ======================================================
 
 def push_history(ticker: str, tf: str, candle: Dict):
@@ -120,7 +115,7 @@ def trend_direction(history: List[Dict]) -> str:
     return "NEUTRAL"
 
 def calc_signal(rec: VoiceRecord, history: List[Dict]):
-    c, ma, de, r = rec.close, rec.ma20, rec.dema9, rec.rsi
+    c, de, r = rec.close, rec.dema9, rec.rsi
     dir_tf = trend_direction(history)
     if dir_tf == "UP" and c > de: return "CZEKAJ DO" if r >= 80 else "BUY"
     if dir_tf == "DOWN" and c < de: return "CZEKAJ DO" if r <= 20 else "SELL"
@@ -129,31 +124,19 @@ def calc_signal(rec: VoiceRecord, history: List[Dict]):
     return "CZEKAJ"
 
 # ======================================================
-#  WIDEŁKI I TP
+#  OBSŁUGA TP I WIDEŁEK
 # ======================================================
 
 def compute_tp(signal: str, close: float, low: float, high: float, ma: float, de: float):
     rng = high - low
     tp1, tp2, tp3 = None, None, None
     if "BUY" in signal:
-        tp1 = close + rng * 0.55
-        tp2 = close + rng * 1.1
+        tp1, tp2 = close + rng * 0.55, close + rng * 1.1
         tp3 = close + (abs(close - ((ma + de) / 2)) * 1.8)
     elif "SELL" in signal:
-        tp1 = close - rng * 0.55
-        tp2 = close - rng * 1.1
+        tp1, tp2 = close - rng * 0.55, close - rng * 1.1
         tp3 = close - (abs(close - ((ma + de) / 2)) * 1.8)
     return {"tp1": round(tp1, 2) if tp1 else "—", "tp2": round(tp2, 2) if tp2 else "—", "tp3": round(tp3, 2) if tp3 else "—"}
-
-def consensus_signal(ticker_data: Dict):
-    sigs = []
-    for tf in ["M5", "M15", "H1"]:
-        if tf in ticker_data and "last_data" in ticker_data[tf]:
-            s = ticker_data[tf]["last_data"].get("signal")
-            if s: sigs.append(s)
-    buy_s = sigs.count("BUY") + (0.5 if "PRAWIE BUY" in sigs else 0)
-    sell_s = sigs.count("SELL") + (0.5 if "PRAWIE SELL" in sigs else 0)
-    return "BUY" if buy_s >= 1.5 else "SELL" if sell_s >= 1.5 else "CZEKAJ"
 
 # ======================================================
 #  MAIN ENDPOINT
@@ -161,9 +144,8 @@ def consensus_signal(ticker_data: Dict):
 
 @app.post("/voice-parse")
 def voice_parse(rec: VoiceRecord):
-    validate_candle(rec)
-    ensure_time(rec)
-    t, tf = rec.ticker.upper().strip(), normalize_tf(rec.interval)
+    if not rec.time: rec.time = datetime.now().strftime("%H:%M")
+    t, tf = rec.ticker.upper().strip(), rec.interval.upper()
     
     if t not in memory: memory[t] = {}
     if tf not in memory[t]: memory[t][tf] = {"history": [], "last_data": {}}
@@ -185,14 +167,13 @@ def voice_parse(rec: VoiceRecord):
         "comment": generate_pro_comment(rec, history, signal)
     }
 
-    if tf == "M15":
+    if tf in ["M15", "15"]:
         rng = rec.high - rec.low
         data["widelki"] = f"{rec.low + rng*0.18:.2f} - {rec.low + rng*0.32:.2f}"
         data.update(compute_tp(signal, rec.close, rec.low, rec.high, rec.ma20, rec.dema9))
 
     push_history(t, tf, data)
     memory[t][tf]["last_data"] = data
-    data["consensus"] = consensus_signal(memory[t])
     
     return data
 
@@ -202,12 +183,11 @@ def voice_parse(rec: VoiceRecord):
 
 @app.post("/voice-parse/delete")
 def voice_delete(req: DeleteReq):
-    t = req.ticker.upper()
-    if t in memory: del memory[t]
-    return {"ticker": t, "deleted": True}
+    if req.ticker.upper() in memory: del memory[req.ticker.upper()]
+    return {"deleted": True}
 
 @app.get("/memory")
 def memory_view(): return memory
 
 @app.get("/")
-def root(): return {"name": "VOICE XTB 7.4 PRO", "status": "ONLINE"}
+def root(): return {"name": "VOICE XTB 7.5.3 PRO", "status": "ONLINE"}
