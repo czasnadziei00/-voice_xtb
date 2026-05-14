@@ -6,7 +6,7 @@ from datetime import datetime
 
 app = FastAPI(
     title="VOICE XTB 7.4 PRO",
-    version="7.4.7"
+    version="7.4.9"
 )
 
 # ======================================================
@@ -49,7 +49,7 @@ class VoiceRecord(BaseModel):
     ma20: float
     dema9: float
     rsi: float
-    entry: Optional[float] = None  # Dodane pole entry do modelu wejściowego
+    entry: Optional[float] = None 
 
 class DeleteReq(BaseModel):
     ticker: str
@@ -86,11 +86,16 @@ def generate_pro_comment(rec: VoiceRecord, history: List[Dict], signal: str) -> 
     r = rec.rsi
     rel = "Słabość (pod DEMA9)." if rec.close < rec.dema9 else "Siła (nad DEMA9)."
     
+    interp = "Rynek dąży do normalizacji."
+    if "BUY" in signal: interp = "Potwierdzona presja kupujących."
+    elif "SELL" in signal: interp = "Dominacja podaży."
+
     return (
-        f"TREND: {t_dir}. Wsparcie: {supp_min}-{supp_max}.\n\n"
-        f"MOMENTUM: RSI {r:.1f}.\n\n"
-        f"SIŁA: {rel}\n\n"
-        f"RYZYKO: SL poniżej {supp_min}."
+        f"DIAGNOZA TRENDU: Kierunek {t_dir}. Struktura powyżej {supp_min}-{supp_max}.\n\n"
+        f"MOMENTUM RYNKOWE: RSI {r:.1f}.\n\n"
+        f"SIŁA RELATYWNA: {rel}\n\n"
+        f"INTERPRETACJA: {interp}\n\n"
+        f"ZARZĄDZANIE RYZYKIEM: Kluczowe wsparcie: {supp_min}."
     )
 
 # ======================================================
@@ -98,19 +103,12 @@ def generate_pro_comment(rec: VoiceRecord, history: List[Dict], signal: str) -> 
 # ======================================================
 
 def push_history(ticker: str, tf: str, candle: Dict):
-    if ticker not in memory:
-        memory[ticker] = {}
-    if tf not in memory[ticker] or "history" not in memory[ticker][tf]:
-        memory[ticker][tf] = {"history": []}
+    if ticker not in memory: memory[ticker] = {}
+    if tf not in memory[ticker]: memory[ticker][tf] = {"history": []}
     memory[ticker][tf]["history"].append(candle)
     limit = HISTORY_LIMITS.get(tf, 5)
     if len(memory[ticker][tf]["history"]) > limit:
         memory[ticker][tf]["history"] = memory[ticker][tf]["history"][-limit:]
-
-def get_history(ticker: str, tf: str) -> List[Dict]:
-    if ticker not in memory or tf not in memory[ticker]:
-        return []
-    return memory[ticker][tf].get("history", [])
 
 def trend_direction(history: List[Dict]) -> str:
     if len(history) < 2: return "NEUTRAL"
@@ -134,11 +132,6 @@ def calc_signal(rec: VoiceRecord, history: List[Dict]):
 #  WIDEŁKI I TP
 # ======================================================
 
-def compute_widelki(low: float, high: float):
-    dol = low + (high - low) * 0.18
-    gor = low + (high - low) * 0.32
-    return round(dol, 2), round(gor, 2)
-
 def compute_tp(signal: str, close: float, low: float, high: float, ma: float, de: float):
     rng = high - low
     tp1, tp2, tp3 = None, None, None
@@ -155,14 +148,12 @@ def compute_tp(signal: str, close: float, low: float, high: float, ma: float, de
 def consensus_signal(ticker_data: Dict):
     sigs = []
     for tf in ["M5", "M15", "H1"]:
-        if tf in ticker_data:
-            s = ticker_data[tf].get("signal")
+        if tf in ticker_data and "last_data" in ticker_data[tf]:
+            s = ticker_data[tf]["last_data"].get("signal")
             if s: sigs.append(s)
-    buy_score = sigs.count("BUY") + (0.5 if "PRAWIE BUY" in sigs else 0)
-    sell_score = sigs.count("SELL") + (0.5 if "PRAWIE SELL" in sigs else 0)
-    if buy_score >= 1.5: return "BUY"
-    if sell_score >= 1.5: return "SELL"
-    return "CZEKAJ"
+    buy_s = sigs.count("BUY") + (0.5 if "PRAWIE BUY" in sigs else 0)
+    sell_s = sigs.count("SELL") + (0.5 if "PRAWIE SELL" in sigs else 0)
+    return "BUY" if buy_s >= 1.5 else "SELL" if sell_s >= 1.5 else "CZEKAJ"
 
 # ======================================================
 #  MAIN ENDPOINT
@@ -173,22 +164,18 @@ def voice_parse(rec: VoiceRecord):
     validate_candle(rec)
     ensure_time(rec)
     t, tf = rec.ticker.upper().strip(), normalize_tf(rec.interval)
-    history = get_history(t, tf)
+    
+    if t not in memory: memory[t] = {}
+    if tf not in memory[t]: memory[t][tf] = {"history": [], "last_data": {}}
+
+    history = memory[t][tf]["history"]
     signal = calc_signal(rec, history)
 
-    # --- LOGIKA ENTRY (TRZYMANIE CENY LUB CZYSZCZENIE PRZEZ 0) ---
-    current_entry_in_memory = ""
-    if t in memory and tf in memory[t] and "last_data" in memory[t][tf]:
-        current_entry_in_memory = memory[t][tf]["last_data"].get("entry", "")
-
-    # Decyzja:
+    prev_entry = memory[t][tf]["last_data"].get("entry", "")
     if rec.entry is not None:
-        if rec.entry == 0:
-            final_entry = ""  # Wyzerowanie pozycji
-        else:
-            final_entry = str(rec.entry) # Nowa pozycja lub aktualizacja
+        final_entry = "" if rec.entry == 0 else str(rec.entry)
     else:
-        final_entry = current_entry_in_memory # Przepisanie starej jeśli w głosie nie było entry
+        final_entry = prev_entry
 
     data = {
         "ticker": t, "interval": tf, "time": rec.time,
@@ -198,20 +185,19 @@ def voice_parse(rec: VoiceRecord):
         "comment": generate_pro_comment(rec, history, signal)
     }
 
-    push_history(t, tf, data)
     if tf == "M15":
-        dol, gor = compute_widelki(rec.low, rec.high)
-        data["widelki"] = f"{dol:.2f} - {gor:.2f}"
+        rng = rec.high - rec.low
+        data["widelki"] = f"{rec.low + rng*0.18:.2f} - {rec.low + rng*0.32:.2f}"
         data.update(compute_tp(signal, rec.close, rec.low, rec.high, rec.ma20, rec.dema9))
 
-    if t not in memory: memory[t] = {}
-    if tf not in memory[t]: memory[t][tf] = {"history": []}
-    memory[t][tf].update({"last_data": data, "signal": signal})
+    push_history(t, tf, data)
+    memory[t][tf]["last_data"] = data
     data["consensus"] = consensus_signal(memory[t])
+    
     return data
 
 # ======================================================
-#  SYSTEM ENDPOINTS
+#  SYSTEM
 # ======================================================
 
 @app.post("/voice-parse/delete")
@@ -221,13 +207,7 @@ def voice_delete(req: DeleteReq):
     return {"ticker": t, "deleted": True}
 
 @app.get("/memory")
-def memory_view():
-    return memory
-
-@app.get("/health")
-def health():
-    return {"status": "ok", "server_time": datetime.now().strftime("%H:%M:%S"), "tickers": len(memory)}
+def memory_view(): return memory
 
 @app.get("/")
-def root():
-    return {"name": "VOICE XTB 7.4 PRO", "status": "ONLINE", "tickers": len(memory)}
+def root(): return {"name": "VOICE XTB 7.4 PRO", "status": "ONLINE"}
