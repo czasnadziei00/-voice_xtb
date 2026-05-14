@@ -25,7 +25,6 @@ app.add_middleware(
 #  PAMIĘĆ MULTI-TF
 # ======================================================
 
-# memory[ticker][interval] przechowuje historię oraz ostatni stan
 memory: Dict[str, Dict[str, Dict]] = {}
 
 HISTORY_LIMITS = {
@@ -81,22 +80,54 @@ def ensure_time(rec: VoiceRecord):
     if not rec.time:
         rec.time = datetime.now().strftime("%H:%M")
 
+def generate_pro_comment(rec: VoiceRecord, history: List[Dict], signal: str) -> str:
+    dir_tf = trend_direction(history)
+    
+    # 1. TREND I STRUKTURA
+    trend_map = {"UP": "Wzrostowy", "DOWN": "Spadkowy", "NEUTRAL": "Boczny/Neutralny"}
+    t_dir = trend_map.get(dir_tf, "Neutralny")
+    
+    supp_min = round(rec.low * 0.998, 2)
+    supp_max = round(rec.low, 2)
+    
+    # 2. MOMENTUM (RSI)
+    r = rec.rsi
+    if r <= 30:
+        mom = f"RSI {r:.1f} = skrajne wyprzedanie. Sygnał paniki, statystycznie rynek odbija z tych poziomów."
+    elif r >= 70:
+        mom = f"RSI {r:.1f} = skrajne wykupienie. Możliwa dystrybucja, ryzyko korekty."
+    else:
+        mom = f"RSI {r:.1f} w strefie neutralnej. Momentum stabilne."
+
+    # 3. SIŁA/SŁABOŚĆ
+    rel = "Słabość krótkoterminowa (pod DEMA9)." if rec.close < rec.dema9 else "Siła krótkoterminowa (nad DEMA9)."
+    knot = " Długi dolny knot sugeruje obecność popytu." if (rec.close - rec.low) > (rec.high - rec.close) * 2 else ""
+    
+    # 4. INTERPRETACJA I RYZYKO
+    interp = "Rynek dąży do normalizacji/VWAP."
+    if "BUY" in signal: interp = "Potwierdzona presja kupujących. Struktura pro-wzrostowa."
+    if "SELL" in signal: interp = "Dominacja podaży. Możliwa kontynuacja przeceny."
+    
+    risk = f"Kluczowa ochrona struktury na poziomie {supp_min}."
+
+    return (
+        f"TREND: {t_dir}. Struktura trzyma, dopóki cena powyżej {supp_min}-{supp_max}.\n\n"
+        f"MOMENTUM: {mom}\n\n"
+        f"SIŁA: {rel}{knot}\n\n"
+        f"INTERPRETACJA: {interp}\n\n"
+        f"RYZYKO: Realne zagrożenie przy zamknięciu poniżej {supp_min}."
+    )
+
 # ======================================================
-#  HISTORIA (FIXED)
+#  HISTORIA
 # ======================================================
 
 def push_history(ticker: str, tf: str, candle: Dict):
     if ticker not in memory:
         memory[ticker] = {}
-
-    # Kluczowa poprawka: inicjalizacja jeśli brakuje interwału lub klucza history
     if tf not in memory[ticker] or "history" not in memory[ticker][tf]:
         memory[ticker][tf] = {"history": []}
-
-    # Dodanie nowej świecy
     memory[ticker][tf]["history"].append(candle)
-
-    # Przesuwne okno (FIFO) - kasowanie najstarszych
     limit = HISTORY_LIMITS.get(tf, 5)
     if len(memory[ticker][tf]["history"]) > limit:
         memory[ticker][tf]["history"] = memory[ticker][tf]["history"][-limit:]
@@ -113,13 +144,10 @@ def get_history(ticker: str, tf: str) -> List[Dict]:
 def trend_direction(history: List[Dict]) -> str:
     if len(history) < 2:
         return "NEUTRAL"
-
     first = history[0]["close"]
     last = history[-1]["close"]
-    
     if first == 0: return "NEUTRAL"
     diff = abs(last - first) / first
-
     if last > first and diff > 0.005: 
         return "UP"
     if last < first and diff > 0.005:
@@ -136,7 +164,7 @@ def trend_strength(history: List[Dict]) -> float:
     return spread + slope
 
 # ======================================================
-#  SILNIKI ANALITYCZNE
+#  RSI ENGINE
 # ======================================================
 
 def rsi_state(rsi: float) -> str:
@@ -146,8 +174,16 @@ def rsi_state(rsi: float) -> str:
     if rsi <= 35: return "OVERSOLD"
     return "NEUTRAL"
 
+# ======================================================
+#  VOLATILITY
+# ======================================================
+
 def candle_volatility(low: float, high: float) -> float:
     return abs(high - low) / low if low > 0 else 0
+
+# ======================================================
+#  SIGNAL ENGINE PRO
+# ======================================================
 
 def calc_signal(rec: VoiceRecord, history: List[Dict]):
     c, ma, de, r = rec.close, rec.ma20, rec.dema9, rec.rsi
@@ -177,13 +213,17 @@ def calc_signal(rec: VoiceRecord, history: List[Dict]):
     return "CZEKAJ"
 
 # ======================================================
-#  POZIOMY TECHNICZNE
+#  WIDEŁKI
 # ======================================================
 
 def compute_widelki(low: float, high: float):
     dol = low + (high - low) * 0.20
     gor = low + (high - low) * 0.35
     return round(dol, 2), round(gor, 2)
+
+# ======================================================
+#  TP
+# ======================================================
 
 def compute_tp(signal: str, close: float, low: float, high: float, ma: float, de: float):
     rng = high - low
@@ -205,6 +245,10 @@ def compute_tp(signal: str, close: float, low: float, high: float, ma: float, de
         "tp3": round(tp3, 2) if tp3 else "—",
     }
 
+# ======================================================
+#  CONSENSUS
+# ======================================================
+
 def consensus_signal(ticker_data: Dict):
     sigs = []
     for tf in ["M5", "M15", "H1"]:
@@ -220,12 +264,16 @@ def consensus_signal(ticker_data: Dict):
     return "CZEKAJ"
 
 # ======================================================
-#  ENDPOINTS
+#  ROOT
 # ======================================================
 
 @app.get("/")
 def root():
     return {"name": "VOICE XTB 7.4 PRO", "status": "ONLINE", "tickers": len(memory)}
+
+# ======================================================
+#  MAIN ENDPOINT
+# ======================================================
 
 @app.post("/voice-parse")
 def voice_parse(rec: VoiceRecord):
@@ -235,31 +283,24 @@ def voice_parse(rec: VoiceRecord):
     t = rec.ticker.upper().strip()
     tf = normalize_tf(rec.interval)
     
-    # 1. Pobierz historię (dla obliczeń)
     history = get_history(t, tf)
-    
-    # 2. Oblicz sygnał
     signal = calc_signal(rec, history)
     
-    # 3. Paczka danych
     data = {
         "ticker": t, "interval": tf, "time": rec.time,
         "open": rec.open, "low": rec.low, "high": rec.high, "close": rec.close,
         "volume": rec.volume, "ma20": rec.ma20, "dema9": rec.dema9, "rsi": rec.rsi,
         "signal": signal, "entry": "",
-        "comment": f"{t} {tf} close={rec.close} rsi={rec.rsi} signal={signal}"
+        "comment": generate_pro_comment(rec, history, signal)
     }
 
-    # 4. DODAJ DO HISTORII (Bezpieczna funkcja)
     push_history(t, tf, data)
 
-    # 5. TP + WIDEŁKI
     if tf == "M15":
         dol, gor = compute_widelki(rec.low, rec.high)
         data["widelki"] = f"{dol:.2f} - {gor:.2f}"
         data.update(compute_tp(signal, rec.close, rec.low, rec.high, rec.ma20, rec.dema9))
 
-    # 6. AKTUALIZACJA STANU (Używamy update, by NIE kasować 'history')
     if t not in memory: memory[t] = {}
     if tf not in memory[t]: memory[t][tf] = {"history": []}
     
@@ -268,10 +309,12 @@ def voice_parse(rec: VoiceRecord):
         "signal": signal
     })
 
-    # 7. KONSENSUS
     data["consensus"] = consensus_signal(memory[t])
-
     return data
+
+# ======================================================
+#  DELETE
+# ======================================================
 
 @app.post("/voice-parse/delete")
 def voice_delete(req: DeleteReq):
@@ -279,9 +322,17 @@ def voice_delete(req: DeleteReq):
     if t in memory: del memory[t]
     return {"ticker": t, "deleted": True}
 
+# ======================================================
+#  MEMORY VIEW
+# ======================================================
+
 @app.get("/memory")
 def memory_view():
     return memory
+
+# ======================================================
+#  HEALTH
+# ======================================================
 
 @app.get("/health")
 def health():
