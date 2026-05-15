@@ -10,10 +10,6 @@ from datetime import datetime
 
 app = FastAPI(title="VOICE XTB 8.1 HYBRID", version="8.1")
 
-# ======================================================
-#  CORS
-# ======================================================
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -21,10 +17,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# ======================================================
-#  PAMIĘĆ I MODELE
-# ======================================================
 
 memory: Dict[str, Dict] = {}
 HISTORY_LIMITS = {"M5": 14, "M15": 7, "H1": 3}
@@ -45,10 +37,6 @@ class VoiceRecord(BaseModel):
 
 class DeleteReq(BaseModel):
     ticker: str
-
-# ======================================================
-#  ANALYTICS HELPERS
-# ======================================================
 
 def avg(values):
     return sum(values) / len(values) if values else 0
@@ -74,10 +62,6 @@ def detect_market_state(rec: VoiceRecord, history: List[Dict]) -> str:
     if abs(rec.dema9 - rec.ma20) < (avg_range * 0.15): return "RANGE"
     return "TREND" if trend_direction(history) != "NEUTRAL" else "RANGE"
 
-# ======================================================
-#  HYBRID CONFIDENCE ENGINE (65% RISK / 35% CONS)
-# ======================================================
-
 def calc_confidence(rec: VoiceRecord, history: List[Dict]) -> Dict:
     score = 0
     trend = trend_direction(history)
@@ -86,26 +70,16 @@ def calc_confidence(rec: VoiceRecord, history: List[Dict]) -> Dict:
     vol_spike = rec.volume / avg([x.get("volume", 0) for x in history[-3:]]) if len(history) > 1 else 1
     strength = (abs(rec.close - rec.open) / (rec.high - rec.low)) if (rec.high - rec.low) > 0 else 0
 
-    # 1. TREND & ALIGNMENT (+35 pkt)
     if trend == "UP" and rec.close > rec.dema9: score += 25
     if trend == "DOWN" and rec.close < rec.dema9: score += 25
     if (rec.dema9 > rec.ma20 and trend == "UP") or (rec.dema9 < rec.ma20 and trend == "DOWN"): score += 10
-
-    # 2. MOMENTUM (+20 pkt) - Szybka reakcja
     if (trend == "UP" and rsi_delta > 0) or (trend == "DOWN" and rsi_delta < 0): score += 20
-
-    # 3. VOLUME (+15 pkt)
     if vol_spike > 1.1: score += 15
-
-    # 4. STRENGTH (+15 pkt) - Filtr knotów (liberalny 0.45)
     if strength > 0.45: score += 15
-
-    # 5. SAFETY FILTERS (Konserwatywne)
     if market_state == "BREAKOUT": score += 10
     if market_state == "CHAOS": score -= 25
     if market_state == "RANGE": score -= 5
 
-    # PROGI HYBRYDOWE
     signal = "CZEKAJ"
     if trend == "UP":
         if score >= 70: signal = "BUY PREMIUM"
@@ -118,12 +92,9 @@ def calc_confidence(rec: VoiceRecord, history: List[Dict]) -> Dict:
 
     return {
         "signal": signal, "confidence": max(0, min(100, score)),
-        "trend": trend, "market_state": market_state
+        "trend": trend, "market_state": market_state,
+        "vol_spike": vol_spike
     }
-
-# ======================================================
-#  MTF CONSENSUS & TP ENGINE
-# ======================================================
 
 def get_final_consensus(ticker: str):
     t_data = memory.get(ticker, {})
@@ -154,10 +125,6 @@ def generate_tp(signal, conf, ref_close, rng):
         return {"tp1": round(ref_close - rng*0.55*mult, 2), "tp2": round(ref_close - rng*1.1*mult, 2), "tp3": round(ref_close - rng*1.6*mult, 2)}
     return {}
 
-# ======================================================
-#  ENDPOINTS
-# ======================================================
-
 @app.post("/voice-parse")
 def voice_parse(rec: VoiceRecord):
     if not rec.time: rec.time = datetime.now().strftime("%H:%M")
@@ -174,9 +141,32 @@ def voice_parse(rec: VoiceRecord):
     temp.update(analysis)
     consensus = get_final_consensus(t)
     
+    final_signal = consensus["signal"]
+    confidence = consensus["confidence"]
+    
+    interpretation = "STÓJ Z BOKU. Rynek szuka kierunku."
+    if confidence >= 75:
+        interpretation = "MOCNY SYGNAŁ! Wszystkie warunki spełnione. Można wchodzić."
+    elif confidence >= 55:
+        interpretation = "DOBRY MOMENT, ale pilnuj trendu. Możliwa szybka akcja."
+    elif "KONFLIKT" in final_signal:
+        interpretation = "ZAKAZ WEJŚCIA! M5 i M15 walczą ze sobą."
+
+    comment = (
+        f"--- 🎙️ RAPORT 8.1 HYBRID ---\n\n"
+        f"📌 WERDYKT: {final_signal}\n"
+        f"🔥 PEWNOŚĆ: {confidence}% "
+        f"({'Wysoka' if confidence >= 70 else 'Średnia' if confidence >= 45 else 'Niska'})\n\n"
+        f"📈 ANALIZA TECHNICZNA:\n"
+        f"• Trend: {analysis['trend']}\n"
+        f"• Stan: {analysis['market_state']}\n"
+        f"• RSI: {rec.rsi:.1f}\n"
+        f"• Wolumen: {'WYSOKI' if analysis.get('vol_spike', 1) > 1.2 else 'Stabilny'}\n\n"
+        f"💡 CO ROBIĆ:\n{interpretation}"
+    )
+
     data = temp.copy()
-    data.update({"signal": consensus["signal"], "confidence": consensus["confidence"], "entry": memory[t]["global_entry"]})
-    data["comment"] = f"--- 8.1 HYBRID ---\nSIG: {data['signal']}\nCONF: {data['confidence']}%\nTR: {analysis['trend']}\nSTATE: {analysis['market_state']}\nRSI: {rec.rsi:.1f}\nENTRY: {data['entry']}"
+    data.update({"signal": final_signal, "confidence": confidence, "entry": memory[t]["global_entry"], "comment": comment})
 
     m15_h = memory[t].get("M15", {}).get("history", [])
     if m15_h:
