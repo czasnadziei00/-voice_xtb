@@ -1,3 +1,7 @@
+# ======================================================
+#  IMPORTY I KONFIGURACJA
+# ======================================================
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -22,7 +26,7 @@ app.add_middleware(
 )
 
 # ======================================================
-#  PAMIĘĆ I KONFIGURACJA
+#  PAMIĘĆ I MODELE DANYCH
 # ======================================================
 
 memory: Dict[str, Dict] = {}
@@ -46,16 +50,16 @@ class DeleteReq(BaseModel):
     ticker: str
 
 # ======================================================
-#  LOGIKA ANALITYCZNA
+#  LOGIKA ANALITYCZNA (TREND I SYGNAŁ RAW)
 # ======================================================
 
 def trend_direction(history: List[Dict]) -> str:
-    if len(history) < 2: return "NEUTRAL"
+    if len(history) < 3: return "NEUTRAL"
     first, last = history[0]["close"], history[-1]["close"]
     if first == 0: return "NEUTRAL"
     diff = abs(last - first) / first
-    if last > first and diff > 0.003: return "UP"
-    if last < first and diff > 0.003: return "DOWN"
+    if last > first and diff > 0.001: return "UP"
+    if last < first and diff > 0.001: return "DOWN"
     return "NEUTRAL"
 
 def calc_raw_signal(rec: VoiceRecord, history: List[Dict]) -> str:
@@ -108,26 +112,26 @@ def get_final_consensus(ticker: str) -> str:
     return s15
 
 # ======================================================
-#  PRO-COMMENT GENERATOR
+#  GENERATOR RAPORTU (KOMENTARZ)
 # ======================================================
 
 def generate_pro_comment(rec: VoiceRecord, history: List[Dict], final_signal: str) -> str:
     dt = trend_direction(history)
     rsi_status = "WYKUPIONY" if rec.rsi > 70 else "WYPRZEDANY" if rec.rsi < 30 else "NEUTRALNY"
-    supp_min = round(rec.low * 0.998, 2)
+    supp_min = round(rec.low * 0.999, 2) if "BUY" in final_signal else round(rec.high * 1.001, 2)
     
     return (
         f"--- RAPORT KONSENSUSU 7.6.0 ---\n\n"
         f"WERDYKT KOŃCOWY: {final_signal}\n"
-        f"TREND GŁÓWNY: {dt}\n"
+        f"TREND LOKALNY ({rec.interval}): {dt}\n"
         f"MOMENTUM RSI: {rec.rsi:.1f} ({rsi_status})\n"
-        f"POZIOM WEJŚCIA: {rec.close}\n"
-        f"WSPARCIE DLA STOP LOSS: {supp_min}\n\n"
+        f"CENA ZAMKNIĘCIA: {rec.close}\n"
+        f"POZIOMY OCHRONNE: {supp_min}\n\n"
         f"INTERPRETACJA: {'Szukaj okazji' if 'BUY' in final_signal else 'Rozważ S' if 'SELL' in final_signal else 'Stój z boku'}.\n"
     )
 
 # ======================================================
-#  MAIN ENDPOINT
+#  GŁÓWNY ENDPOINT PROCESUJĄCY
 # ======================================================
 
 @app.post("/voice-parse")
@@ -138,22 +142,22 @@ def voice_parse(rec: VoiceRecord):
     if t not in memory: memory[t] = {"global_entry": ""}
     if tf not in memory[t]: memory[t][tf] = {"history": [], "last_data": {}}
 
-    history = memory[t][tf]["history"]
-    raw_sig = calc_raw_signal(rec, history)
-
     if rec.entry is not None:
         memory[t]["global_entry"] = "" if rec.entry == 0 else str(rec.entry)
 
     temp_data = {
         "ticker": t, "interval": tf, "time": rec.time,
         "close": rec.close, "open": rec.open, "low": rec.low, "high": rec.high,
-        "dema9": rec.dema9, "ma20": rec.ma20, "rsi": rec.rsi,
-        "signal_raw": raw_sig
+        "dema9": rec.dema9, "ma20": rec.ma20, "rsi": rec.rsi
     }
     
     memory[t][tf]["history"].append(temp_data)
     if len(memory[t][tf]["history"]) > HISTORY_LIMITS.get(tf, 5):
         memory[t][tf]["history"].pop(0)
+
+    history = memory[t][tf]["history"]
+    raw_sig = calc_raw_signal(rec, history)
+    temp_data["signal_raw"] = raw_sig
 
     final_sig = get_final_consensus(t)
 
@@ -162,19 +166,30 @@ def voice_parse(rec: VoiceRecord):
     data["entry"] = memory[t]["global_entry"]
     data["comment"] = generate_pro_comment(rec, history, final_sig)
 
-    if tf == "M15":
-        rng = rec.high - rec.low
-        data["widelki"] = f"{rec.low + rng*0.18:.2f} - {rec.low + rng*0.32:.2f}"
+    m15_history = memory[t].get("M15", {}).get("history", [])
+    if m15_history:
+        ref = m15_history[-1]
+        rng = ref["high"] - ref["low"]
+        data["widelki"] = f"{ref['low'] + rng*0.18:.2f} - {ref['low'] + rng*0.32:.2f}"
+        
         if "BUY" in final_sig:
-            data.update({"tp1": round(rec.close + rng*0.55, 2), "tp2": round(rec.close + rng*1.1, 2)})
+            data.update({
+                "tp1": round(ref["close"] + rng*0.55, 2), 
+                "tp2": round(ref["close"] + rng*1.1, 2), 
+                "tp3": round(ref["close"] + rng*1.6, 2)
+            })
         elif "SELL" in final_sig:
-            data.update({"tp1": round(rec.close - rng*0.55, 2), "tp2": round(rec.close - rng*1.1, 2)})
+            data.update({
+                "tp1": round(ref["close"] - rng*0.55, 2), 
+                "tp2": round(ref["close"] - rng*1.1, 2), 
+                "tp3": round(ref["close"] - rng*1.6, 2)
+            })
 
     memory[t][tf]["last_data"] = data
     return data
 
 # ======================================================
-#  SYSTEM
+#  ZARZĄDZANIE PAMIĘCIĄ I SYSTEMEM
 # ======================================================
 
 @app.post("/voice-parse/delete")
