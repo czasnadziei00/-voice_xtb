@@ -5,8 +5,8 @@ from typing import Dict, Optional, List
 from datetime import datetime
 
 app = FastAPI(
-    title="VOICE XTB 7.5.3 PRO",
-    version="7.5.3"
+    title="VOICE XTB 7.6.0 PRO - KONSENSUS",
+    version="7.6.0"
 )
 
 # ======================================================
@@ -22,20 +22,11 @@ app.add_middleware(
 )
 
 # ======================================================
-#  PAMIĘĆ MULTI-TF
+#  PAMIĘĆ I KONFIGURACJA
 # ======================================================
 
-memory: Dict[str, Dict[str, Dict]] = {}
-
-HISTORY_LIMITS = {
-    "M5": 14,
-    "M15": 7,
-    "H1": 3
-}
-
-# ======================================================
-#  MODELE
-# ======================================================
+memory: Dict[str, Dict] = {}
+HISTORY_LIMITS = {"M5": 14, "M15": 7, "H1": 3}
 
 class VoiceRecord(BaseModel):
     ticker: str = Field(..., min_length=1)
@@ -49,94 +40,91 @@ class VoiceRecord(BaseModel):
     ma20: float
     dema9: float
     rsi: float
-    entry: Optional[float] = None 
+    entry: Optional[float] = None
 
 class DeleteReq(BaseModel):
     ticker: str
 
 # ======================================================
-#  PRO-COMMENT GENERATOR (SYGNAŁOWY)
+#  LOGIKA ANALITYCZNA
 # ======================================================
-
-def generate_pro_comment(rec: VoiceRecord, history: List[Dict], signal: str) -> str:
-    dir_tf = trend_direction(history)
-    trend_map = {"UP": "WZROSTOWY", "DOWN": "SPADKOWY", "NEUTRAL": "BOCZNY"}
-    t_dir = trend_map.get(dir_tf, "NEUTRALNY")
-    
-    supp_min = round(rec.low * 0.998, 2)
-    supp_max = round(rec.low, 2)
-    
-    r = rec.rsi
-    if r <= 30:
-        mom = f"RSI {r:.1f} - SKRAJNE WYPRZEDANIE. MOŻLIWA AKUMULACJA."
-    elif r >= 70:
-        mom = f"RSI {r:.1f} - SKRAJNE WYKUPIENIE. RYZYKO DYSTRYBUCJI."
-    else:
-        mom = f"RSI {r:.1f} - MOMENTUM STABILNE W STREFIE NEUTRALNEJ."
-
-    rel = "SILNA STRUKTURA POWYŻEJ DEMA9." if rec.close > rec.dema9 else "SŁABOŚĆ POD DEMA9 - MOŻLIWA KONTRA."
-    
-    if "BUY" in signal:
-        interp = "POTWIERDZONA PRESJA POPYTU. SZUKANIE WEJŚCIA W STRUKTURZE WZROSTOWEJ."
-    elif "SELL" in signal:
-        interp = "DOMINACJA PODAŻY. STRUKTURA SUGERUJE KONTYNUACJĘ SPADKÓW."
-    else:
-        interp = "BRAK KLAROWNEGO SYGNAŁU. RUCH W KONSOLIDACJI."
-
-    return (
-        f"--- RAPORT ANALITYCZNY ---\n\n"
-        f"TREND GŁÓWNY: {t_dir}\n"
-        f"STREFA WSPARCIA: {supp_min} - {supp_max}\n\n"
-        f"MOMENTUM: {mom}\n"
-        f"SIŁA RELATYWNA: {rel}\n\n"
-        f"INTERPRETACJA: {interp}\n\n"
-        f"RYZYKO (STOP LOSS): OCHRONA PONIŻEJ POZIOMU {supp_min}."
-    )
-
-# ======================================================
-#  ANALIZA TECHNICZNA
-# ======================================================
-
-def push_history(ticker: str, tf: str, candle: Dict):
-    if ticker not in memory: memory[ticker] = {}
-    if tf not in memory[ticker]: memory[ticker][tf] = {"history": []}
-    memory[ticker][tf]["history"].append(candle)
-    limit = HISTORY_LIMITS.get(tf, 5)
-    if len(memory[ticker][tf]["history"]) > limit:
-        memory[ticker][tf]["history"] = memory[ticker][tf]["history"][-limit:]
 
 def trend_direction(history: List[Dict]) -> str:
     if len(history) < 2: return "NEUTRAL"
     first, last = history[0]["close"], history[-1]["close"]
     if first == 0: return "NEUTRAL"
     diff = abs(last - first) / first
-    if last > first and diff > 0.005: return "UP"
-    if last < first and diff > 0.005: return "DOWN"
+    if last > first and diff > 0.003: return "UP"
+    if last < first and diff > 0.003: return "DOWN"
     return "NEUTRAL"
 
-def calc_signal(rec: VoiceRecord, history: List[Dict]):
+def calc_raw_signal(rec: VoiceRecord, history: List[Dict]) -> str:
     c, de, r = rec.close, rec.dema9, rec.rsi
-    dir_tf = trend_direction(history)
-    if dir_tf == "UP" and c > de: return "CZEKAJ DO" if r >= 80 else "BUY"
-    if dir_tf == "DOWN" and c < de: return "CZEKAJ DO" if r <= 20 else "SELL"
-    if dir_tf == "UP": return "PRAWIE BUY"
-    if dir_tf == "DOWN": return "PRAWIE SELL"
-    return "CZEKAJ"
+    dt = trend_direction(history)
+    if dt == "UP" and c > de: return "BUY" if r < 80 else "CZEKAJ"
+    if dt == "DOWN" and c < de: return "SELL" if r > 20 else "CZEKAJ"
+    return "PRAWIE BUY" if dt == "UP" else "PRAWIE SELL" if dt == "DOWN" else "CZEKAJ"
 
 # ======================================================
-#  OBSŁUGA TP I WIDEŁEK
+#  SYSTEM KONSENSUSU (HYBRYDA M5 + M15)
 # ======================================================
 
-def compute_tp(signal: str, close: float, low: float, high: float, ma: float, de: float):
-    rng = high - low
-    tp1, tp2, tp3 = None, None, None
-    if "BUY" in signal:
-        tp1, tp2 = close + rng * 0.55, close + rng * 1.1
-        tp3 = close + (abs(close - ((ma + de) / 2)) * 1.8)
-    elif "SELL" in signal:
-        tp1, tp2 = close - rng * 0.55, close - rng * 1.1
-        tp3 = close - (abs(close - ((ma + de) / 2)) * 1.8)
-    return {"tp1": round(tp1, 2) if tp1 else "—", "tp2": round(tp2, 2) if tp2 else "—", "tp3": round(tp3, 2) if tp3 else "—"}
+def get_final_consensus(ticker: str) -> str:
+    t_data = memory.get(ticker, {})
+    m5_list = t_data.get("M5", {}).get("history", [])
+    m15_list = t_data.get("M15", {}).get("history", [])
+
+    if not m15_list: 
+        return m5_list[-1]["signal_raw"] if m5_list else "CZEKAJ"
+    
+    last_m15 = m15_list[-1]
+    s15 = last_m15.get("signal_raw", "CZEKAJ")
+    
+    if not m5_list: return s15
+    
+    last_m5 = m5_list[-1]
+    s5 = last_m5.get("signal_raw", "CZEKAJ")
+
+    if "BUY" in s15 and "BUY" in s5: return "BUY (STRONG)"
+    if "SELL" in s15 and "SELL" in s5: return "SELL (STRONG)"
+    
+    if len(m5_list) >= 2:
+        m5_prev = m5_list[-2]
+        m5_now = m5_list[-1]
+        
+        if s15 in ["BUY", "PRAWIE BUY", "CZEKAJ"]:
+            if m5_now["close"] > m5_now["open"] and m5_prev["close"] > m5_prev["open"]:
+                if m5_now["close"] > m5_now["dema9"]:
+                    return "BUY (M5 ACCEL)"
+        
+        if s15 in ["SELL", "PRAWIE SELL", "CZEKAJ"]:
+            if m5_now["close"] < m5_now["open"] and m5_prev["close"] < m5_prev["open"]:
+                if m5_now["close"] < m5_now["dema9"]:
+                    return "SELL (M5 ACCEL)"
+
+    if ("BUY" in s15 and "SELL" in s5) or ("SELL" in s15 and "BUY" in s5):
+        return "CZEKAJ (KONFLIKT)"
+
+    return s15
+
+# ======================================================
+#  PRO-COMMENT GENERATOR
+# ======================================================
+
+def generate_pro_comment(rec: VoiceRecord, history: List[Dict], final_signal: str) -> str:
+    dt = trend_direction(history)
+    rsi_status = "WYKUPIONY" if rec.rsi > 70 else "WYPRZEDANY" if rec.rsi < 30 else "NEUTRALNY"
+    supp_min = round(rec.low * 0.998, 2)
+    
+    return (
+        f"--- RAPORT KONSENSUSU 7.6.0 ---\n\n"
+        f"WERDYKT KOŃCOWY: {final_signal}\n"
+        f"TREND GŁÓWNY: {dt}\n"
+        f"MOMENTUM RSI: {rec.rsi:.1f} ({rsi_status})\n"
+        f"POZIOM WEJŚCIA: {rec.close}\n"
+        f"WSPARCIE DLA STOP LOSS: {supp_min}\n\n"
+        f"INTERPRETACJA: {'Szukaj okazji' if 'BUY' in final_signal else 'Rozważ S' if 'SELL' in final_signal else 'Stój z boku'}.\n"
+    )
 
 # ======================================================
 #  MAIN ENDPOINT
@@ -147,34 +135,42 @@ def voice_parse(rec: VoiceRecord):
     if not rec.time: rec.time = datetime.now().strftime("%H:%M")
     t, tf = rec.ticker.upper().strip(), rec.interval.upper()
     
-    if t not in memory: memory[t] = {}
+    if t not in memory: memory[t] = {"global_entry": ""}
     if tf not in memory[t]: memory[t][tf] = {"history": [], "last_data": {}}
 
     history = memory[t][tf]["history"]
-    signal = calc_signal(rec, history)
+    raw_sig = calc_raw_signal(rec, history)
 
-    prev_entry = memory[t][tf]["last_data"].get("entry", "")
     if rec.entry is not None:
-        final_entry = "" if rec.entry == 0 else str(rec.entry)
-    else:
-        final_entry = prev_entry
+        memory[t]["global_entry"] = "" if rec.entry == 0 else str(rec.entry)
 
-    data = {
+    temp_data = {
         "ticker": t, "interval": tf, "time": rec.time,
-        "open": rec.open, "low": rec.low, "high": rec.high, "close": rec.close,
-        "volume": rec.volume, "ma20": rec.ma20, "dema9": rec.dema9, "rsi": rec.rsi,
-        "signal": signal, "entry": final_entry,
-        "comment": generate_pro_comment(rec, history, signal)
+        "close": rec.close, "open": rec.open, "low": rec.low, "high": rec.high,
+        "dema9": rec.dema9, "ma20": rec.ma20, "rsi": rec.rsi,
+        "signal_raw": raw_sig
     }
+    
+    memory[t][tf]["history"].append(temp_data)
+    if len(memory[t][tf]["history"]) > HISTORY_LIMITS.get(tf, 5):
+        memory[t][tf]["history"].pop(0)
 
-    if tf in ["M15", "15"]:
+    final_sig = get_final_consensus(t)
+
+    data = temp_data.copy()
+    data["signal"] = final_sig
+    data["entry"] = memory[t]["global_entry"]
+    data["comment"] = generate_pro_comment(rec, history, final_sig)
+
+    if tf == "M15":
         rng = rec.high - rec.low
         data["widelki"] = f"{rec.low + rng*0.18:.2f} - {rec.low + rng*0.32:.2f}"
-        data.update(compute_tp(signal, rec.close, rec.low, rec.high, rec.ma20, rec.dema9))
+        if "BUY" in final_sig:
+            data.update({"tp1": round(rec.close + rng*0.55, 2), "tp2": round(rec.close + rng*1.1, 2)})
+        elif "SELL" in final_sig:
+            data.update({"tp1": round(rec.close - rng*0.55, 2), "tp2": round(rec.close - rng*1.1, 2)})
 
-    push_history(t, tf, data)
     memory[t][tf]["last_data"] = data
-    
     return data
 
 # ======================================================
@@ -190,4 +186,4 @@ def voice_delete(req: DeleteReq):
 def memory_view(): return memory
 
 @app.get("/")
-def root(): return {"name": "VOICE XTB 7.5.3 PRO", "status": "ONLINE"}
+def root(): return {"name": "VOICE XTB 7.6.0 PRO", "status": "ONLINE"}
