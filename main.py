@@ -24,6 +24,23 @@ TURNOVER_LIMITS = {
     "D1": 1000000.0,
 }
 
+# Polskie słowniki mapujące dla raportu tekstowego
+TREND_PL = {
+    "UP": "WZROSTOWY",
+    "DOWN": "SPADKOWY",
+    "NEUTRAL": "BOCZNY (NEUTRALNY)",
+    "UNKNOWN": "NIEZNANY"
+}
+
+MARKET_STATE_PL = {
+    "TREND": "W TRENDZIE",
+    "RANGE": "KONSOLIDACJA (CHOP)",
+    "BREAKOUT": "WYBICIE",
+    "CHAOS": "CHAOS / WYSOKA ZMIENNOŚĆ",
+    "ILLIQUID": "NISKA PŁYNNOŚĆ",
+    "UNKNOWN": "BRAK DANYCH"
+}
+
 
 class VoiceRecord(BaseModel):
     ticker: str = Field(..., min_length=1)
@@ -87,7 +104,7 @@ def calc_confidence(rec: VoiceRecord, history: List[Dict]) -> Dict:
 
     if turnover < min_required_turnover:
         return {
-            "signal": "NO LIQUIDITY",
+            "signal": "BRAK PŁYNNOŚCI",
             "confidence": 0,
             "trend": "UNKNOWN",
             "market_state": "ILLIQUID",
@@ -166,8 +183,8 @@ def get_final_consensus(ticker: str):
     last_m5 = m5[-1]
     s5, c5 = last_m5.get("signal", "CZEKAJ"), last_m5.get("confidence", 0)
 
-    if s5 == "NO LIQUIDITY":
-        return {"signal": "NO LIQUIDITY", "confidence": 0}
+    if s5 == "BRAK PŁYNNOŚCI":
+        return {"signal": "BRAK PŁYNNOŚCI", "confidence": 0}
 
     d1_trend = "NEUTRAL"
     if d1:
@@ -207,8 +224,8 @@ def get_final_consensus(ticker: str):
     last_m15 = m15[-1]
     s15, c15 = last_m15.get("signal", "CZEKAJ"), last_m15.get("confidence", 0)
 
-    if s15 == "NO LIQUIDITY":
-        return {"signal": "NO LIQUIDITY", "confidence": 0}
+    if s15 == "BRAK PŁYNNOŚCI":
+        return {"signal": "BRAK PŁYNNOŚCI", "confidence": 0}
 
     m15_close = last_m15.get("close", 0)
     m15_open = last_m15.get("open", 0)
@@ -298,7 +315,7 @@ def get_final_consensus(ticker: str):
 
 
 def generate_tp(signal, conf, ref_close, rng):
-    if signal == "NO LIQUIDITY":
+    if signal == "BRAK PŁYNNOŚCI":
         return {}
     mult = 1.4 if conf >= 80 else 1.1 if conf >= 65 else 0.8
     if "BUY" in signal or "STRONG" in signal:
@@ -317,7 +334,6 @@ def generate_tp(signal, conf, ref_close, rng):
 
 
 def safe_time_sort(time_str: str) -> str:
-    """Zapewnia prawidłowe sortowanie dla formatów HH:MM oraz RRRR-MM-DD."""
     if "-" in time_str:
         return time_str
     return f"0000-00-00 {time_str}"
@@ -341,9 +357,8 @@ def voice_parse(rec: VoiceRecord):
     if tf not in memory[t]:
         memory[t][tf] = {"history": [], "last_data": {}}
 
-    # JAWNE KASOWANIE LUB AKTUALIZACJA GLOBALNEGO ENTRY
     if rec.entry is not None:
-        if rec.entry == 0 or rec.entry < 0:
+        if rec.entry <= 0:
             memory[t]["global_entry"] = ""
         else:
             memory[t]["global_entry"] = str(rec.entry)
@@ -373,7 +388,6 @@ def voice_parse(rec: VoiceRecord):
     else:
         history_list.append(temp)
         
-    # ODPORNE SORTOWANIE CHRONOLOGICZNE (DATY I GODZINY)
     history_list.sort(key=lambda x: safe_time_sort(x["time"]))
         
     if len(history_list) > HISTORY_LIMITS.get(tf, 5):
@@ -384,7 +398,7 @@ def voice_parse(rec: VoiceRecord):
     confidence = consensus["confidence"]
 
     interpretation = "STÓJ Z BOKU. Rynek szuka kierunku."
-    if final_signal == "NO LIQUIDITY":
+    if final_signal == "BRAK PŁYNNOŚCI":
         min_required = TURNOVER_LIMITS.get(tf, 50000.0)
         interpretation = f"BRAK PŁYNNOŚCI! Obrót ({analysis['turnover']:,.2f} PLN) poniżej wymaganego limitu {min_required:,.2f} PLN dla {tf}. Analiza zawieszona."
     elif confidence >= 75:
@@ -400,17 +414,22 @@ def voice_parse(rec: VoiceRecord):
     elif "KONFLIKT" in final_signal or "REALIZUJ" in final_signal:
         interpretation = "NIESTABILNOŚĆ! Walka popytu z podażą na interwałach. Dobry moment na realizację zysków."
 
+    # Spolszczenie wartości przed wstrzyknięciem do szablonu raportu
+    trend_pl = TREND_PL.get(analysis['trend'], analysis['trend'])
+    market_state_pl = MARKET_STATE_PL.get(analysis['market_state'], analysis['market_state'])
+    wolumen_status = "Prawidłowy" if final_signal != "BRAK PŁYNNOŚCI" else "ZA NISKI OBRÓT"
+
     comment = (
         f"--- 🎙️ RAPORT 8.1 HYBRID (DOJI CORRECTION) ---\n\n"
         f"📌 WERDYKT: {final_signal}\n"
         f"🔥 PEWNOŚĆ: {confidence}% "
         f"({'Wysoka' if confidence >= 70 else 'Średnia' if confidence >= 52 else 'Niska'})\n\n"
         f"📈 ANALIZA TECHNICZNA:\n"
-        f"• Trend: {analysis['trend']}\n"
-        f"• Stan: {analysis['market_state']}\n"
+        f"• Trend: {trend_pl}\n"
+        f"• Stan: {market_state_pl}\n"
         f"• RSI: {rec.rsi:.1f}\n"
         f"• Obrót świecy: {analysis.get('turnover', 0):,.2f} PLN\n"
-        f"• Wolumen: {rec.volume:.0f} szt. ({'Prawidłowy' if final_signal != 'NO LIQUIDITY' else 'ZA NISKI OBRÓT'})\n\n"
+        f"• Wolumen: {rec.volume:.0f} szt. ({wolumen_status})\n\n"
         f"💡 CO ROBIĆ:\n{interpretation}"
     )
 
@@ -419,13 +438,13 @@ def voice_parse(rec: VoiceRecord):
         {
             "signal": final_signal,
             "confidence": confidence,
-            "entry": memory[t]["global_entry"],  # BEZPOŚREDNIE ZACIĄGANIE AKTUALNEGO STANU
+            "entry": memory[t]["global_entry"],
             "comment": comment,
         }
     )
 
     m15_h = memory[t].get("M15", {}).get("history", [])
-    if m15_h and final_signal != "NO LIQUIDITY":
+    if m15_h and final_signal != "BRAK PŁYNNOŚCI":
         ref = m15_h[-1]
         rng = ref["high"] - ref["low"]
         data["widelki"] = (
@@ -441,9 +460,10 @@ def voice_parse(rec: VoiceRecord):
 
 @app.post("/voice-parse/delete")
 def voice_delete(req: DeleteReq):
-    if req.ticker.upper() in memory:
-        del memory[req.ticker.upper()]
-    return {"deleted": True}
+    t_upper = req.ticker.upper().strip()
+    if t_upper in memory:
+        del memory[t_upper]
+    return {"deleted": True, "ticker": t_upper}
 
 
 @app.get("/memory")
