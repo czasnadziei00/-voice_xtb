@@ -24,7 +24,6 @@ TURNOVER_LIMITS = {
     "D1": 1000000.0,
 }
 
-# Polskie słowniki mapujące dla raportu tekstowego
 TREND_PL = {
     "UP": "WZROSTOWY",
     "DOWN": "SPADKOWY",
@@ -99,7 +98,8 @@ def detect_market_state(rec: VoiceRecord, history: List[Dict]) -> str:
 
 
 def calc_confidence(rec: VoiceRecord, history: List[Dict]) -> Dict:
-    turnover = rec.close * rec.volume
+    # Bezpieczne wyliczenie obrotu: cena * wolumen
+    turnover = float(rec.close * rec.volume)
     min_required_turnover = TURNOVER_LIMITS.get(rec.interval.upper(), 50000.0)
 
     if turnover < min_required_turnover:
@@ -170,21 +170,27 @@ def calc_confidence(rec: VoiceRecord, history: List[Dict]) -> Dict:
     }
 
 
-def get_final_consensus(ticker: str):
+def get_final_consensus(ticker: str, current_tf: str, current_signal: str, current_conf: int):
     t_data = memory.get(ticker, {})
     m5 = t_data.get("M5", {}).get("history", [])
     m15 = t_data.get("M15", {}).get("history", [])
     h1 = t_data.get("H1", {}).get("history", [])
     d1 = t_data.get("D1", {}).get("history", [])
 
+    # FIX LOGICZNY: Jeśli aktualnie przetwarzany interwał wykrył brak płynności, nie szukamy konsensusu
+    if current_signal == "BRAK PŁYNNOŚCI":
+        return {"signal": "BRAK PŁYNNOŚCI", "confidence": 0}
+
+    # Pobieramy bazowy sygnał z M5 lub z aktualnego interwału, jeśli M5 jest puste
     if not m5:
-        return {"signal": "CZEKAJ", "confidence": 0}
+        return {"signal": current_signal, "confidence": current_conf}
 
     last_m5 = m5[-1]
     s5, c5 = last_m5.get("signal", "CZEKAJ"), last_m5.get("confidence", 0)
 
-    if s5 == "BRAK PŁYNNOŚCI":
-        return {"signal": "BRAK PŁYNNOŚCI", "confidence": 0}
+    # Ignorujemy błędy płynności z historii M5, jeśli aktualna świeca innego TF jest prawidłowa
+    if s5 == "BRAK PŁYNNOŚCI" and current_tf != "M5":
+        s5, c5 = current_signal, current_conf
 
     d1_trend = "NEUTRAL"
     if d1:
@@ -224,8 +230,8 @@ def get_final_consensus(ticker: str):
     last_m15 = m15[-1]
     s15, c15 = last_m15.get("signal", "CZEKAJ"), last_m15.get("confidence", 0)
 
-    if s15 == "BRAK PŁYNNOŚCI":
-        return {"signal": "BRAK PŁYNNOŚCI", "confidence": 0}
+    if s15 == "BRAK PŁYNNOŚCI" and current_tf != "M15":
+        s15, c15 = current_signal, current_conf
 
     m15_close = last_m15.get("close", 0)
     m15_open = last_m15.get("open", 0)
@@ -393,12 +399,17 @@ def voice_parse(rec: VoiceRecord):
     if len(history_list) > HISTORY_LIMITS.get(tf, 5):
         history_list.pop(0)
     
-    consensus = get_final_consensus(t)
+    # FIX: Przekazujemy aktualne dane analizy do konsensusu, aby uniknąć nadpisywania zaszłościami
+    consensus = get_final_consensus(t, tf, analysis["signal"], analysis["confidence"])
     final_signal = consensus["signal"]
     confidence = consensus["confidence"]
 
     interpretation = "STÓJ Z BOKU. Rynek szuka kierunku."
-    if final_signal == "BRAK PŁYNNOŚCI":
+    
+    # FIX LOGICZNY RAPORTU: Warunek sprawdza teraz faktyczny stan bieżącej analizy, a nie narzucony konsensus
+    if analysis["signal"] == "BRAK PŁYNNOŚCI" or final_signal == "BRAK PŁYNNOŚCI":
+        final_signal = "BRAK PŁYNNOŚCI"
+        confidence = 0
         min_required = TURNOVER_LIMITS.get(tf, 50000.0)
         interpretation = f"BRAK PŁYNNOŚCI! Obrót ({analysis['turnover']:,.2f} PLN) poniżej wymaganego limitu {min_required:,.2f} PLN dla {tf}. Analiza zawieszona."
     elif confidence >= 75:
@@ -414,7 +425,6 @@ def voice_parse(rec: VoiceRecord):
     elif "KONFLIKT" in final_signal or "REALIZUJ" in final_signal:
         interpretation = "NIESTABILNOŚĆ! Walka popytu z podażą na interwałach. Dobry moment na realizację zysków."
 
-    # Spolszczenie wartości przed wstrzyknięciem do szablonu raportu
     trend_pl = TREND_PL.get(analysis['trend'], analysis['trend'])
     market_state_pl = MARKET_STATE_PL.get(analysis['market_state'], analysis['market_state'])
     wolumen_status = "Prawidłowy" if final_signal != "BRAK PŁYNNOŚCI" else "ZA NISKI OBRÓT"
