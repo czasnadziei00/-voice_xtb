@@ -17,6 +17,13 @@ app.add_middleware(
 memory: Dict[str, Dict] = {}
 HISTORY_LIMITS = {"M5": 14, "M15": 7, "H1": 3, "D1": 2}
 
+TURNOVER_LIMITS = {
+    "M5": 50000.0,
+    "M15": 150000.0,
+    "H1": 400000.0,
+    "D1": 1000000.0,
+}
+
 
 class VoiceRecord(BaseModel):
     ticker: str = Field(..., min_length=1)
@@ -75,12 +82,28 @@ def detect_market_state(rec: VoiceRecord, history: List[Dict]) -> str:
 
 
 def calc_confidence(rec: VoiceRecord, history: List[Dict]) -> Dict:
+    turnover = rec.close * rec.volume
+    min_required_turnover = TURNOVER_LIMITS.get(rec.interval.upper(), 50000.0)
+
+    if turnover < min_required_turnover:
+        return {
+            "signal": "NO LIQUIDITY",
+            "confidence": 0,
+            "trend": "UNKNOWN",
+            "market_state": "ILLIQUID",
+            "vol_spike": 0.0,
+            "turnover": turnover,
+        }
+
     score = 0
     trend = trend_direction(history)
     market_state = detect_market_state(rec, history)
     
     rsi_delta = rec.rsi - history[-1]["rsi"] if history else 0
-    vol_spike = rec.volume / avg([x.get("volume", 0) for x in history[-3:]]) if history else 1
+    
+    avg_vol = avg([x.get("volume", 0) for x in history[-3:]])
+    vol_spike = rec.volume / avg_vol if avg_vol > 0 else 1.0
+    
     strength = (abs(rec.close - rec.open) / (rec.high - rec.low)) if (rec.high - rec.low) > 0 else 0
 
     if trend == "UP" and rec.close > rec.dema9:
@@ -93,7 +116,7 @@ def calc_confidence(rec: VoiceRecord, history: List[Dict]) -> Dict:
         score += 10
     if (trend == "UP" and rsi_delta > 0) or (trend == "DOWN" and rsi_delta < 0):
         score += 20
-    if vol_spike > 1.1:
+    if vol_spike > 1.05:
         score += 15
     if strength > 0.45:
         score += 15
@@ -102,23 +125,23 @@ def calc_confidence(rec: VoiceRecord, history: List[Dict]) -> Dict:
     if market_state == "CHAOS":
         score -= 25
     if market_state == "RANGE":
-        score -= 5
+        score -= 2
 
     signal = "CZEKAJ"
     if trend == "UP":
         if score >= 70:
             signal = "BUY PREMIUM"
-        elif score >= 55:
+        elif score >= 52:
             signal = "BUY AGRESYWNY"
         elif score >= 40:
             signal = "PRAWIE BUY"
     elif trend == "DOWN":
         if score >= 70:
-            signal = "SELL PREMIUM"
-        elif score >= 55:
-            signal = "SELL AGRESYWNY"
+            signal = "EXIT PREMIUM"
+        elif score >= 52:
+            signal = "REDUKUJ"
         elif score >= 40:
-            signal = "PRAWIE SELL"
+            signal = "TREND SŁABNIE"
 
     return {
         "signal": signal,
@@ -126,6 +149,7 @@ def calc_confidence(rec: VoiceRecord, history: List[Dict]) -> Dict:
         "trend": trend,
         "market_state": market_state,
         "vol_spike": vol_spike,
+        "turnover": turnover,
     }
 
 
@@ -141,6 +165,9 @@ def get_final_consensus(ticker: str):
 
     last_m5 = m5[-1]
     s5, c5 = last_m5.get("signal", "CZEKAJ"), last_m5.get("confidence", 0)
+
+    if s5 == "NO LIQUIDITY":
+        return {"signal": "NO LIQUIDITY", "confidence": 0}
 
     d1_trend = "NEUTRAL"
     if d1:
@@ -173,12 +200,15 @@ def get_final_consensus(ticker: str):
     if not m15:
         if h1_trend == "UP" and "BUY" in s5:
             return {"signal": "M5 BUY (ZGODNY Z H1 WCH)", "confidence": c5}
-        if h1_trend == "DOWN" and "SELL" in s5:
-            return {"signal": "M5 SELL (ZGODNY Z H1 WCH)", "confidence": c5}
+        if h1_trend == "DOWN" and s5 in ["EXIT PREMIUM", "REDUKUJ"]:
+            return {"signal": f"M5 {s5} (ZGODNY Z H1)", "confidence": c5}
         return {"signal": s5, "confidence": c5}
 
     last_m15 = m15[-1]
     s15, c15 = last_m15.get("signal", "CZEKAJ"), last_m15.get("confidence", 0)
+
+    if s15 == "NO LIQUIDITY":
+        return {"signal": "NO LIQUIDITY", "confidence": 0}
 
     m15_close = last_m15.get("close", 0)
     m15_open = last_m15.get("open", 0)
@@ -189,8 +219,10 @@ def get_final_consensus(ticker: str):
     upper_shadow = m15_high - max(m15_open, m15_close)
     lower_shadow = min(m15_open, m15_close) - m15_low
 
-    is_upper_rejection = upper_shadow > (candle_body * 1.5)
-    is_lower_rejection = lower_shadow > (candle_body * 1.5)
+    # TWOJA ROZSTRZYGAJĄCA POPRAWKA DLA ŚWIEC TYPU DOJI
+    body_ref = max(candle_body, 0.01)
+    is_upper_rejection = upper_shadow > (body_ref * 1.5)
+    is_lower_rejection = lower_shadow > (body_ref * 1.5)
 
     if d1_trend == "UP" and h1_trend == "UP":
         if "BUY" in s5 and not is_upper_rejection:
@@ -205,20 +237,20 @@ def get_final_consensus(ticker: str):
             }
 
     elif d1_trend == "DOWN" and h1_trend == "DOWN":
-        if "SELL" in s5 and not is_lower_rejection:
+        if s5 in ["EXIT PREMIUM", "REDUKUJ"] and not is_lower_rejection:
             return {
-                "signal": "SHORT PREMIUM",
+                "signal": "EXIT PREMIUM",
                 "confidence": min(100, round((c5 + c15) / 2) + 10),
             }
         elif is_upper_rejection:
             return {
-                "signal": "SHORT",
+                "signal": "REALIZUJ",
                 "confidence": max(0, round((c5 + c15) / 2) - 5),
             }
 
     elif d1_trend == "DOWN" and h1_trend == "UP":
         if "BUY" in s5 and is_upper_rejection:
-            return {"signal": "CZEKAJ (OPÓR D1)", "confidence": 15}
+            return {"signal": "REALIZUJ (OPÓR D1)", "confidence": 15}
         elif "BUY" in s5:
             return {
                 "signal": "BUY KONTRA",
@@ -226,39 +258,39 @@ def get_final_consensus(ticker: str):
             }
 
     elif d1_trend == "UP" and h1_trend == "DOWN":
-        if "SELL" in s5 and is_lower_rejection:
+        if s5 in ["EXIT PREMIUM", "REDUKUJ"] and is_lower_rejection:
             return {"signal": "CZEKAJ (WSPARCIE D1)", "confidence": 20}
-        elif "SELL" in s5:
+        elif s5 in ["EXIT PREMIUM", "REDUKUJ"]:
             return {
-                "signal": "SHORT KONTRA",
+                "signal": "REDUKUJ KONTRA",
                 "confidence": max(10, round((c5 + c15) / 2) - 15),
             }
 
     if "BUY" in s5 and "BUY" in s15:
         return {"signal": "BUY STRONG", "confidence": round((c5 + c15) / 2)}
-    if "SELL" in s5 and "SELL" in s15:
-        return {"signal": "SELL STRONG", "confidence": round((c5 + c15) / 2)}
+    if s5 in ["EXIT PREMIUM", "REDUKUJ"] and s15 in ["EXIT PREMIUM", "REDUKUJ"]:
+        return {"signal": "EXIT STRONG", "confidence": round((c5 + c15) / 2)}
 
     if len(m5) >= 2:
         if (
             m5[-1]["close"] > m5[-1]["open"]
             and m5[-2]["close"] > m5[-2]["open"]
-            and c5 >= 55
+            and c5 >= 52
         ):
             return {"signal": "BUY ACCEL", "confidence": c5}
         if (
             m5[-1]["close"] < m5[-1]["open"]
             and m5[-2]["close"] < m5[-2]["open"]
-            and c5 >= 55
+            and c5 >= 52
         ):
-            return {"signal": "SELL ACCEL", "confidence": c5}
+            return {"signal": "REDUKUJ ACCEL", "confidence": c5}
 
     return {
         "signal": (
-            "CZEKAJ (KONFLIKT)"
+            "REALIZUJ (KONFLIKT)"
             if (
-                ("BUY" in s5 and "SELL" in s15)
-                or ("SELL" in s5 and "BUY" in s15)
+                ("BUY" in s5 and s15 in ["EXIT PREMIUM", "REDUKUJ"])
+                or (s5 in ["EXIT PREMIUM", "REDUKUJ"] and "BUY" in s15)
             )
             else s15
         ),
@@ -267,14 +299,16 @@ def get_final_consensus(ticker: str):
 
 
 def generate_tp(signal, conf, ref_close, rng):
+    if signal == "NO LIQUIDITY":
+        return {}
     mult = 1.4 if conf >= 80 else 1.1 if conf >= 65 else 0.8
-    if "BUY" in signal:
+    if "BUY" in signal or "STRONG" in signal:
         return {
             "tp1": round(ref_close + rng * 0.55 * mult, 2),
             "tp2": round(ref_close + rng * 1.1 * mult, 2),
             "tp3": round(ref_close + rng * 1.6 * mult, 2),
         }
-    if "SELL" in signal or "SHORT" in signal:
+    if any(keyword in signal for keyword in ["EXIT", "REDUKUJ", "SŁABNIE", "REALIZUJ"]):
         return {
             "tp1": round(ref_close - rng * 0.55 * mult, 2),
             "tp2": round(ref_close - rng * 1.1 * mult, 2),
@@ -325,27 +359,33 @@ def voice_parse(rec: VoiceRecord):
     confidence = consensus["confidence"]
 
     interpretation = "STÓJ Z BOKU. Rynek szuka kierunku."
-    if confidence >= 75:
-        interpretation = (
-            "MOCNY SYGNAŁ! Wszystkie warunki spełnione. Można wchodzić."
-        )
-    elif confidence >= 55:
-        interpretation = (
-            "DOBRY MOMENT, ale pilnuj trendu. Możliwa szybka akcja."
-        )
-    elif "KONFLIKT" in final_signal:
-        interpretation = "ZAKAZ WEJŚCIA! M5 i M15 walczą ze sobą."
+    if final_signal == "NO LIQUIDITY":
+        min_required = TURNOVER_LIMITS.get(tf, 50000.0)
+        interpretation = f"BRAK PŁYNNOŚCI! Obrót ({analysis['turnover']:,.2f} PLN) poniżej wymaganego limitu {min_required:,.2f} PLN dla {tf}. Analiza zawieszona."
+    elif confidence >= 75:
+        if "BUY" in final_signal:
+            interpretation = "MOCNY SYGNAŁ! Wszystkie warunki spełnione. Można wchodzić w pozycję długą."
+        else:
+            interpretation = "KRYTYCZNY SYGNAŁ DECYZYJNY! Maksymalne ryzyko dla pozycji Long. Zabezpiecz kapitał."
+    elif confidence >= 52:
+        if "BUY" in final_signal:
+            interpretation = "DOBRY MOMENT dla pozycji Long, ale pilnuj trendu. Możliwa szybka akcja."
+        else:
+            interpretation = "WZRASTAJĄCA SŁABOŚĆ RYNKU. Rozważ częściowe zamknięcie lub zacieśnienie Stop Loss."
+    elif "KONFLIKT" in final_signal or "REALIZUJ" in final_signal:
+        interpretation = "NIESTABILNOŚĆ! Walka popytu z podażą na interwałach. Dobry moment na realizację zysków."
 
     comment = (
-        f"--- 🎙️ RAPORT 8.1 HYBRID ---\n\n"
+        f"--- 🎙️ RAPORT 8.1 HYBRID (DOJI CORRECTION) ---\n\n"
         f"📌 WERDYKT: {final_signal}\n"
         f"🔥 PEWNOŚĆ: {confidence}% "
-        f"({'Wysoka' if confidence >= 70 else 'Średnia' if confidence >= 45 else 'Niska'})\n\n"
+        f"({'Wysoka' if confidence >= 70 else 'Średnia' if confidence >= 52 else 'Niska'})\n\n"
         f"📈 ANALIZA TECHNICZNA:\n"
         f"• Trend: {analysis['trend']}\n"
         f"• Stan: {analysis['market_state']}\n"
         f"• RSI: {rec.rsi:.1f}\n"
-        f"• Wolumen: {'WYSOKI' if analysis.get('vol_spike', 1) > 1.2 else 'Stabilny'}\n\n"
+        f"• Obrót świecy: {analysis.get('turnover', 0):,.2f} PLN\n"
+        f"• Wolumen: {rec.volume:.0f} szt. ({'Prawidłowy' if final_signal != 'NO LIQUIDITY' else 'ZA NISKI OBRÓT'})\n\n"
         f"💡 CO ROBIĆ:\n{interpretation}"
     )
 
@@ -360,7 +400,7 @@ def voice_parse(rec: VoiceRecord):
     )
 
     m15_h = memory[t].get("M15", {}).get("history", [])
-    if m15_h:
+    if m15_h and final_signal != "NO LIQUIDITY":
         ref = m15_h[-1]
         rng = ref["high"] - ref["low"]
         data["widelki"] = (
