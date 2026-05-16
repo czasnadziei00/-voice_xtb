@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 app = FastAPI(title="VOICE XTB 8.1 HYBRID", version="8.1")
 
+# Pełna konfiguracja CORS dla bezproblemowej komunikacji z lokalnym plikiem index.html
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -295,16 +296,19 @@ def voice_parse(rec: VoiceRecord):
     if not rec.time:
         rec.time = datetime.now().strftime("%H:%M")
     t, tf = rec.ticker.upper().strip(), rec.interval.upper()
+    
+    # Inicjalizacja słownika struktury dla nowego instrumentu
     if t not in memory:
         memory[t] = {"global_entry": ""}
     if tf not in memory[t]:
         memory[t][tf] = {"history": [], "last_data": {}}
 
-    # POPRAWKA LOGIKI ENTRY: Nadpisuj tylko gdy wartość jest podana i większa od zera
+    # SYSTEM REJESTRACJI ENTRY: Zabezpieczenie przed nadpisywaniem zerem z nowej świecy
     if rec.entry is not None and rec.entry > 0:
         memory[t]["global_entry"] = str(rec.entry)
     elif rec.entry == 0:
         memory[t]["global_entry"] = ""
+    # Jeżeli w paczce (np. z mikrofonu) rec.entry nie zostało przesłane, zostawiamy dotychczas zapisaną wartość
 
     temp = {
         "ticker": t,
@@ -319,14 +323,18 @@ def voice_parse(rec: VoiceRecord):
         "dema9": rec.dema9,
         "rsi": rec.rsi,
     }
+    
+    # Dodanie rekordu do pamięci serii czasowej
     memory[t][tf]["history"].append(temp)
     if len(memory[t][tf]["history"]) > HISTORY_LIMITS.get(tf, 5):
         memory[t][tf]["history"].pop(0)
 
+    # Analiza techniczna dla bieżącej świecy
     analysis = calc_confidence(rec, memory[t][tf]["history"])
     temp.update(analysis)
+    
+    # Konsensus wielointerwałowy (M5, M15, H1, D1)
     consensus = get_final_consensus(t)
-
     final_signal = consensus["signal"]
     confidence = consensus["confidence"]
 
@@ -355,6 +363,7 @@ def voice_parse(rec: VoiceRecord):
         f"💡 CO ROBIĆ:\n{interpretation}"
     )
 
+    # Budowanie pełnej struktury wyjściowej JSON
     data = temp.copy()
     data.update(
         {
@@ -365,6 +374,7 @@ def voice_parse(rec: VoiceRecord):
         }
     )
 
+    # Generowanie siatki poziomów docelowych (Take Profit) na bazie zmienności M15
     m15_h = memory[t].get("M15", {}).get("history", [])
     if m15_h:
         ref = m15_h[-1]
