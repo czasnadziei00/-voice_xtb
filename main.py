@@ -15,7 +15,7 @@ app.add_middleware(
 )
 
 memory: Dict[str, Dict] = {}
-HISTORY_LIMITS = {"M5": 14, "M15": 7, "H1": 3, "D1": 2}
+HISTORY_LIMITS = {"M5": 14, "M15": 7, "H1": 3, "D1": 4}
 
 TURNOVER_LIMITS = {
     "M5": 50000.0,
@@ -356,9 +356,18 @@ def voice_parse(rec: VoiceRecord):
     analysis = calc_confidence(rec, memory[t][tf]["history"])
     temp.update(analysis)
     
-    memory[t][tf]["history"].append(temp)
-    if len(memory[t][tf]["history"]) > HISTORY_LIMITS.get(tf, 5):
-        memory[t][tf]["history"].pop(0)
+    history_list = memory[t][tf]["history"]
+    existing_index = next((i for i, item in enumerate(history_list) if item["time"] == rec.time), None)
+    
+    if existing_index is not None:
+        history_list[existing_index] = temp
+    else:
+        history_list.append(temp)
+        
+    history_list.sort(key=lambda x: x["time"])
+        
+    if len(history_list) > HISTORY_LIMITS.get(tf, 5):
+        history_list.pop(0)
     
     consensus = get_final_consensus(t)
     final_signal = consensus["signal"]
