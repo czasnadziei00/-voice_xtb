@@ -6,7 +6,6 @@ from pydantic import BaseModel, Field
 
 app = FastAPI(title="VOICE XTB 8.1 HYBRID", version="8.1")
 
-# Pełna konfiguracja CORS dla bezproblemowej komunikacji z lokalnym plikiem index.html
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -57,17 +56,19 @@ def trend_direction(history: List[Dict]) -> str:
 
 
 def detect_market_state(rec: VoiceRecord, history: List[Dict]) -> str:
-    if len(history) < 3:
+    if not history:
         return "UNKNOWN"
     c_range = rec.high - rec.low
     avg_range = avg([abs(x["high"] - x["low"]) for x in history[-3:]])
     if avg_range == 0:
         return "RANGE"
     vol_ratio = c_range / avg_range
-    if vol_ratio > 1.8:
-        return "BREAKOUT"
+    
     if vol_ratio > 2.5:
         return "CHAOS"
+    if vol_ratio > 1.8:
+        return "BREAKOUT"
+        
     if abs(rec.dema9 - rec.ma20) < (avg_range * 0.15):
         return "RANGE"
     return "TREND" if trend_direction(history) != "NEUTRAL" else "RANGE"
@@ -77,19 +78,10 @@ def calc_confidence(rec: VoiceRecord, history: List[Dict]) -> Dict:
     score = 0
     trend = trend_direction(history)
     market_state = detect_market_state(rec, history)
-    rsi_delta = (
-        history[-1]["rsi"] - history[-2]["rsi"] if len(history) > 1 else 0
-    )
-    vol_spike = (
-        rec.volume / avg([x.get("volume", 0) for x in history[-3:]])
-        if len(history) > 1
-        else 1
-    )
-    strength = (
-        (abs(rec.close - rec.open) / (rec.high - rec.low))
-        if (rec.high - rec.low) > 0
-        else 0
-    )
+    
+    rsi_delta = rec.rsi - history[-1]["rsi"] if history else 0
+    vol_spike = rec.volume / avg([x.get("volume", 0) for x in history[-3:]]) if history else 1
+    strength = (abs(rec.close - rec.open) / (rec.high - rec.low)) if (rec.high - rec.low) > 0 else 0
 
     if trend == "UP" and rec.close > rec.dema9:
         score += 25
@@ -297,18 +289,15 @@ def voice_parse(rec: VoiceRecord):
         rec.time = datetime.now().strftime("%H:%M")
     t, tf = rec.ticker.upper().strip(), rec.interval.upper()
     
-    # Inicjalizacja słownika struktury dla nowego instrumentu
     if t not in memory:
         memory[t] = {"global_entry": ""}
     if tf not in memory[t]:
         memory[t][tf] = {"history": [], "last_data": {}}
 
-    # SYSTEM REJESTRACJI ENTRY: Zabezpieczenie przed nadpisywaniem zerem z nowej świecy
     if rec.entry is not None and rec.entry > 0:
         memory[t]["global_entry"] = str(rec.entry)
     elif rec.entry == 0:
         memory[t]["global_entry"] = ""
-    # Jeżeli w paczce (np. z mikrofonu) rec.entry nie zostało przesłane, zostawiamy dotychczas zapisaną wartość
 
     temp = {
         "ticker": t,
@@ -324,16 +313,13 @@ def voice_parse(rec: VoiceRecord):
         "rsi": rec.rsi,
     }
     
-    # Dodanie rekordu do pamięci serii czasowej
-    memory[t][tf]["history"].append(temp)
-    if len(memory[t][tf]["history"]) > HISTORY_LIMITS.get(tf, 5):
-        memory[t][tf]["history"].pop(0)
-
-    # Analiza techniczna dla bieżącej świecy
     analysis = calc_confidence(rec, memory[t][tf]["history"])
     temp.update(analysis)
     
-    # Konsensus wielointerwałowy (M5, M15, H1, D1)
+    memory[t][tf]["history"].append(temp)
+    if len(memory[t][tf]["history"]) > HISTORY_LIMITS.get(tf, 5):
+        memory[t][tf]["history"].pop(0)
+    
     consensus = get_final_consensus(t)
     final_signal = consensus["signal"]
     confidence = consensus["confidence"]
@@ -363,7 +349,6 @@ def voice_parse(rec: VoiceRecord):
         f"💡 CO ROBIĆ:\n{interpretation}"
     )
 
-    # Budowanie pełnej struktury wyjściowej JSON
     data = temp.copy()
     data.update(
         {
@@ -374,7 +359,6 @@ def voice_parse(rec: VoiceRecord):
         }
     )
 
-    # Generowanie siatki poziomów docelowych (Take Profit) na bazie zmienności M15
     m15_h = memory[t].get("M15", {}).get("history", [])
     if m15_h:
         ref = m15_h[-1]
