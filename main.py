@@ -299,8 +299,12 @@ def voice_parse(rec: VoiceRecord):
         memory[t] = {"global_entry": ""}
     if tf not in memory[t]:
         memory[t][tf] = {"history": [], "last_data": {}}
-    if rec.entry is not None:
-        memory[t]["global_entry"] = "" if rec.entry == 0 else str(rec.entry)
+
+    # POPRAWKA LOGIKI ENTRY: Nadpisuj tylko gdy wartość jest podana i większa od zera
+    if rec.entry is not None and rec.entry > 0:
+        memory[t]["global_entry"] = str(rec.entry)
+    elif rec.entry == 0:
+        memory[t]["global_entry"] = ""
 
     temp = {
         "ticker": t,
