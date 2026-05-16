@@ -316,6 +316,13 @@ def generate_tp(signal, conf, ref_close, rng):
     return {}
 
 
+def safe_time_sort(time_str: str) -> str:
+    """Zapewnia prawidłowe sortowanie dla formatów HH:MM oraz RRRR-MM-DD."""
+    if "-" in time_str:
+        return time_str
+    return f"0000-00-00 {time_str}"
+
+
 @app.post("/voice-parse")
 def voice_parse(rec: VoiceRecord):
     if not rec.time:
@@ -334,10 +341,12 @@ def voice_parse(rec: VoiceRecord):
     if tf not in memory[t]:
         memory[t][tf] = {"history": [], "last_data": {}}
 
-    if rec.entry is not None and rec.entry > 0:
-        memory[t]["global_entry"] = str(rec.entry)
-    elif rec.entry == 0:
-        memory[t]["global_entry"] = ""
+    # JAWNE KASOWANIE LUB AKTUALIZACJA GLOBALNEGO ENTRY
+    if rec.entry is not None:
+        if rec.entry == 0 or rec.entry < 0:
+            memory[t]["global_entry"] = ""
+        else:
+            memory[t]["global_entry"] = str(rec.entry)
 
     temp = {
         "ticker": t,
@@ -364,7 +373,8 @@ def voice_parse(rec: VoiceRecord):
     else:
         history_list.append(temp)
         
-    history_list.sort(key=lambda x: x["time"])
+    # ODPORNE SORTOWANIE CHRONOLOGICZNE (DATY I GODZINY)
+    history_list.sort(key=lambda x: safe_time_sort(x["time"]))
         
     if len(history_list) > HISTORY_LIMITS.get(tf, 5):
         history_list.pop(0)
@@ -409,7 +419,7 @@ def voice_parse(rec: VoiceRecord):
         {
             "signal": final_signal,
             "confidence": confidence,
-            "entry": memory[t]["global_entry"],
+            "entry": memory[t]["global_entry"],  # BEZPOŚREDNIE ZACIĄGANIE AKTUALNEGO STANU
             "comment": comment,
         }
     )
