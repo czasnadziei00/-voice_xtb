@@ -219,7 +219,6 @@ def get_final_consensus(ticker: str):
     upper_shadow = m15_high - max(m15_open, m15_close)
     lower_shadow = min(m15_open, m15_close) - m15_low
 
-    # TWOJA ROZSTRZYGAJĄCA POPRAWKA DLA ŚWIEC TYPU DOJI
     body_ref = max(candle_body, 0.01)
     is_upper_rejection = upper_shadow > (body_ref * 1.5)
     is_lower_rejection = lower_shadow > (body_ref * 1.5)
@@ -324,7 +323,14 @@ def voice_parse(rec: VoiceRecord):
     t, tf = rec.ticker.upper().strip(), rec.interval.upper()
     
     if t not in memory:
-        memory[t] = {"global_entry": ""}
+        memory[t] = {
+            "global_entry": "",
+            "M5": {"history": [], "last_data": {}},
+            "M15": {"history": [], "last_data": {}},
+            "H1": {"history": [], "last_data": {}},
+            "D1": {"history": [], "last_data": {}}
+        }
+        
     if tf not in memory[t]:
         memory[t][tf] = {"history": [], "last_data": {}}
 
