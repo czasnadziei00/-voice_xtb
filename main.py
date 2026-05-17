@@ -26,30 +26,12 @@ HISTORY_LIMITS = {
     "D1": 5,
 }
 
-# Skalibrowane pod GPW progi obrotu (Cena * Wolumen)
 TURNOVER_LIMITS = {
     "M5": 20000.0,
     "M15": 75000.0,
     "H1": 200000.0,
     "D1": 600000.0,
 }
-
-TREND_PL = {
-    "UP": "WZROSTOWY (HOSSA)",
-    "DOWN": "SPADKOWY (BESSA)",
-    "NEUTRAL": "BOCZNY (KONSOLIDACJA)",
-    "UNKNOWN": "NIEZNANY",
-}
-
-MARKET_STATE_PL = {
-    "TREND": "W TRENDZIE WZROSTOWYM",
-    "RANGE": "KONSOLIDACJA (CHOP)",
-    "BREAKOUT": "WYBICIE GÓRĄ (MOC)",
-    "CHAOS": "CHAOS / MAKSYMALNA ZMIENNOŚĆ",
-    "ILLIQUID": "NISKA PŁYNNOŚĆ ARKUSZA",
-    "UNKNOWN": "BRAK DANYCH",
-}
-
 
 class VoiceRecord(BaseModel):
     ticker: str = Field(..., min_length=1)
@@ -65,53 +47,40 @@ class VoiceRecord(BaseModel):
     rsi: float
     entry: Optional[float] = None
 
-
 class DeleteReq(BaseModel):
     ticker: str
-
 
 def avg(values):
     return sum(values) / len(values) if values else 0
 
-
 def trend_direction(history: List[Dict]) -> str:
     if len(history) < 3:
         return "NEUTRAL"
-
     closes = [x["close"] for x in history[-3:]]
     dema = [x["dema9"] for x in history[-3:]]
-
     c_slope = closes[-1] - closes[0]
     d_slope = dema[-1] - dema[0]
-
     if c_slope > 0 and d_slope > 0:
         return "UP"
     if c_slope < 0 and d_slope < 0:
         return "DOWN"
     return "NEUTRAL"
 
-
 def detect_market_state(rec: VoiceRecord, history: List[Dict]) -> str:
     if not history:
         return "UNKNOWN"
-
     c_range = rec.high - rec.low
     avg_range = avg([abs(x["high"] - x["low"]) for x in history[-3:]])
-
     if avg_range == 0:
         return "RANGE"
-
     vol_ratio = c_range / avg_range
-
     if vol_ratio > 2.8:
         return "CHAOS"
     if vol_ratio > 1.55:
         return "BREAKOUT"
     if abs(rec.dema9 - rec.ma20) < (avg_range * 0.12):
         return "RANGE"
-
     return "TREND" if trend_direction(history) != "NEUTRAL" else "RANGE"
-
 
 def calc_confidence(rec: VoiceRecord, history: List[Dict]) -> Dict:
     turnover = float(rec.close * rec.volume)
@@ -130,19 +99,12 @@ def calc_confidence(rec: VoiceRecord, history: List[Dict]) -> Dict:
     trend = trend_direction(history)
     market_state = detect_market_state(rec, history)
     rsi_delta = rec.rsi - history[-1]["rsi"] if history else 0
-
     avg_vol = avg([x.get("volume", 0) for x in history[-3:]])
     vol_spike = rec.volume / avg_vol if avg_vol > 0 else 1.0
     candle_range = rec.high - rec.low
-
     strength = (abs(rec.close - rec.open) / candle_range) if candle_range > 0 else 0
     close_at_high = ((rec.close - rec.low) / candle_range) if candle_range > 0 else 0
 
-    # =====================================================
-    # MALOWANIE PROPORCJI SYSTEMU (62.5% Agresywny / 37.5% Konserwatywny)
-    # =====================================================
-    
-    # 1. MODUŁ AGRESYWNY (Max: 100 pkt) - Szybkie anomalie i momentum
     score_agg = 0
     if trend == "UP" and rsi_delta > 0:
         score_agg += 25
@@ -156,32 +118,26 @@ def calc_confidence(rec: VoiceRecord, history: List[Dict]) -> Dict:
         score_agg += 15
     score_agg = max(0, min(100, score_agg))
 
-    # 2. MODUŁ KONSERWATYWNY (Max: 100 pkt) - Struktura trendu i filtry ryzyka
     score_con = 0
     if trend == "UP" and rec.close > rec.dema9:
         score_con += 40
     if rec.dema9 > rec.ma20 and rec.close > rec.ma20:
         score_con += 30
     if 52 <= rec.rsi <= 72:
-        score_con += 30  # Bezpieczna, nieprzegrzana strefa wzrostów
+        score_con += 30
         
-    # Konserwatywne filtry ujemne (Zabezpieczenia)
     if trend == "DOWN":
-        score_con -= 30  # Zakaz kupowania w bessecie na tym TF
+        score_con -= 30
     if rec.rsi > 78:
-        score_con -= 25  # Kara za skrajne wykupienie (ryzyko dystrybucji)
+        score_con -= 25
     if market_state == "CHAOS":
         score_con -= 20
     if market_state == "RANGE":
         score_con -= 5
     score_con = max(0, min(100, score_con))
 
-    # 3. WYKORZYSTANIE WAG (Środki Twoich przedziałów: 62.5% i 37.5%)
     score = round((score_agg * 0.625) + (score_con * 0.375))
 
-    # =====================================================
-    # GENEROWANIE SYGNAŁU NA PODSTAWIE INTEGRACJI WAG
-    # =====================================================
     signal = "CZEKAJ"
     if score >= 68:
         signal = "BUY PREMIUM"
@@ -200,7 +156,6 @@ def calc_confidence(rec: VoiceRecord, history: List[Dict]) -> Dict:
         "vol_spike": vol_spike,
         "turnover": turnover,
     }
-
 
 def get_final_consensus(ticker: str, current_tf: str, current_signal: str, current_conf: int):
     t_data = memory.get(ticker, {})
@@ -223,7 +178,6 @@ def get_final_consensus(ticker: str, current_tf: str, current_signal: str, curre
         s5 = current_signal
         c5 = current_conf
 
-    # Architektura trendu wyższego rzędu (D1 / H1) dla akcji GPW
     d1_trend = "NEUTRAL"
     if d1:
         d1_rec = d1[-1]
@@ -240,17 +194,14 @@ def get_final_consensus(ticker: str, current_tf: str, current_signal: str, curre
         elif h1_rec.get("close", 0) < h1_rec.get("ma20", 0):
             h1_trend = "DOWN"
 
-    # Konsensus wielointerwałowy z uwzględnieniem wag
     if d1_trend == "UP" and h1_trend == "UP":
         if "BUY" in s5:
             return {"signal": "BUY PREMIUM", "confidence": min(100, c5 + 15)}
         elif s5 in ["CZEKAJ", "TREND SŁABNIE"] and current_conf > 30:
-            # 62.5% dominacja agresywnego podejścia pozwala zauważyć korektę jako okazję (Buy on Dip)
             return {"signal": "KOREKTA W HOSSIE (BUY ON DIP)", "confidence": 65}
 
     if d1_trend == "DOWN" or h1_trend == "DOWN":
         if "BUY" in s5:
-            # Konserwatywny filtr (37.5%) zbija pewność przy próbie gry przeciwko trendowi H1/D1
             return {"signal": "BUY AGRESYWNY (KONTRA TREND D1)", "confidence": max(35, c5 - 20)}
 
     if "BUY" in s5:
@@ -258,11 +209,9 @@ def get_final_consensus(ticker: str, current_tf: str, current_signal: str, curre
 
     return {"signal": current_signal, "confidence": current_conf}
 
-
 def generate_tp(signal, conf, ref_close, rng):
     if signal == "BRAK PŁYNNOŚCI":
         return {}
-
     mult = 1.3 if conf >= 80 else 1.0 if conf >= 65 else 0.75
     if "BUY" in signal or "KOREKTA" in signal:
         return {
@@ -272,12 +221,10 @@ def generate_tp(signal, conf, ref_close, rng):
         }
     return {}
 
-
 def safe_time_sort(time_str: str) -> str:
     if "-" in time_str:
         return time_str
     return f"0000-00-00 {time_str}"
-
 
 @app.post("/voice-parse")
 def voice_parse(rec: VoiceRecord):
@@ -339,43 +286,93 @@ def voice_parse(rec: VoiceRecord):
     final_signal = consensus["signal"]
     confidence = consensus["confidence"]
 
-    interpretation = "STÓJ Z BOKU. Trwa dystrybucja lub akumulacja bez jasnego kierunku."
+    memory[t][tf]["last_data"] = temp.copy()
+    memory[t][tf]["last_data"].update({"signal": final_signal, "confidence": confidence})
 
-    if analysis["signal"] == "BRAK PŁYNNOŚCI" or final_signal == "BRAK PŁYNNOŚCI":
-        final_signal = "BRAK PŁYNNOŚCI"
-        confidence = 0
-        min_required = TURNOVER_LIMITS.get(tf, 20000.0)
-        interpretation = f"NISKI OBRÓT ({analysis['turnover']:,.2f} PLN). Próg dla {tf} to {min_required:,.2f} PLN. Bezpieczniej odpuścić."
-    
-    elif confidence >= 72:
-        if "BUY" in final_signal or "KOREKTA" in final_signal:
-            interpretation = "MOCNY UKŁAD POPYTOWY NA AKCJACH. Idealny moment na daytrading/swing wejście."
-    
-    elif confidence >= 48:
-        if "BUY" in final_signal or "KOREKTA" in final_signal:
-            interpretation = "Popyt buduje pozycję na wolumenie. Możliwa kontynuacja ruchu w górę."
-        else:
-            interpretation = "Rynek wyhamowuje. Ryzyko lokalnej korekty lub obsunięcia ceny."
-            
-    elif "KONTRA" in final_signal or "TREND SŁABNIE" in final_signal:
-        interpretation = "Główny trend wyższego rzędu jest spadkowy. Kupowanie tutaj niesie wysokie ryzyko."
+    m5_last = memory[t]["M5"].get("last_data", {})
+    m15_last = memory[t]["M15"].get("last_data", {})
 
-    trend_pl = TREND_PL.get(analysis["trend"], analysis["trend"])
-    market_state_pl = MARKET_STATE_PL.get(analysis["market_state"], analysis["market_state"])
-    wolumen_status = "Prawidłowy" if final_signal != "BRAK PŁYNNOŚCI" else "ZA NISKI OBRÓT"
+    str_m15 = "BRAK DANYCH STRUKTURALNYCH M15"
+    str_m5 = "BRAK DANYCH STRUKTURALNYCH M5"
+    wniosek = "Oczekiwanie na komplet danych z interwałów M5 oraz M15."
+    
+    if m15_last:
+        c_m15 = m15_last.get('close', 0)
+        d_m15 = m15_last.get('dema9', 0)
+        m_m15 = m15_last.get('ma20', 0)
+        r_m15 = m15_last.get('rsi', 0)
+        
+        rel_dema15 = "wróciła pod DEMA9" if c_m15 < d_m15 else "utrzymuje się nad DEMA9"
+        rel_ma15 = "daleko pod ceną → trend średnioterminowy nadal silny" if c_m15 > m_m15 else "w pobliżu lub pod MA20"
+        rel_rsi15 = "→ momentum nadal dodatnie, nie ma załamania" if r_m15 >= 60 else "→ momentum ulega osłabieniu"
+        
+        str_m15 = (
+            f"- Cena: {c_m15:.2f}\n"
+            f"- DEMA9: {d_m15:.2f}\n"
+            f"- MA20: {m_m15:.2f}\n"
+            f"- RSI: {r_m15:.1f}\n\n"
+            f"Interpretacja systemowa:\n"
+            f"- Cena {rel_dema15}, ale:\n"
+            f"- MA20 jest {rel_ma15}\n"
+            f"- RSI {r_m15:.1f} {rel_rsi15}\n"
+            f"- Brak agresywnej podaży strukturalnej."
+        )
+
+    if m5_last:
+        c_m5 = m5_last.get('close', 0)
+        d_m5 = m5_last.get('dema9', 0)
+        m_m5 = m5_last.get('ma20', 0)
+        r_m5 = m5_last.get('rsi', 0)
+        
+        rel_ma5 = "jest nad ceną → to normalne w korekcie" if m_m5 > c_m5 else "jest pod ceną → popyt dominuje"
+        rel_rsi5 = "→ momentum schłodzone, ale nie słabe" if 40 <= r_m5 <= 59 else f"→ momentum na poziomie {r_m5:.1f}"
+        
+        str_m5 = (
+            f"- Cena: {c_m5:.2f}\n"
+            f"- DEMA9: {d_m5:.2f}\n"
+            f"- MA20: {m_m5:.2f}\n"
+            f"- RSI: {r_m5:.1f}\n\n"
+            f"Interpretacja systemowa:\n"
+            f"- Cena testuje DEMA9 M5\n"
+            f"- MA20 M5 {rel_ma5}\n"
+            f"- RSI {r_m5:.1f} {rel_rsi5}"
+        )
+
+    if "BUY" in final_signal or "KOREKTA" in final_signal:
+        wniosek = (
+            "🔥 To jest KOREKTA IMPULSU, nie odwrócenie trendu.\n"
+            "🔥 Struktura nadal jest wzrostowa.\n"
+            "🔥 System nie widzi sygnału słabości strukturalnej."
+        )
+    elif "SŁABNIE" in final_signal:
+        wniosek = (
+            "⚠️ System wykrywa strukturalne osłabienie popytu.\n"
+            "⚠️ Zwiększone ryzyko dystrybucji na wyższym interwale."
+        )
+
+    tp1_v = tp2_v = tp3_v = "—"
+    m15_h = memory[t].get("M15", {}).get("history", [])
+    if m15_h and final_signal != "BRAK PŁYNNOŚCI":
+        ref = m15_h[-1]
+        rng = ref["high"] - ref["low"]
+        tp_d = generate_tp(final_signal, confidence, ref["close"], rng)
+        tp1_v = f"{tp_d.get('tp1', 0):.2f}" if tp_d.get('tp1') else "—"
+        tp2_v = f"{tp_d.get('tp2', 0):.2f}" if tp_d.get('tp2') else "—"
+        tp3_v = f"{tp_d.get('tp3', 0):.2f}" if tp_d.get('tp3') else "—"
 
     comment = (
-        f"--- 🎙️ RAPORT 8.2 AGGRESSIVE HYBRID (GPW LONG) ---\n\n"
-        f"📌 WERDYKT: {final_signal}\n"
-        f"🔥 PEWNOŚĆ: {confidence}%\n\n"
-        f"📈 ANALIZA TECHNICZNA (GPW):\n"
-        f"• Trend: {trend_pl}\n"
-        f"• Stan rynku: {market_state_pl}\n"
-        f"• RSI: {rec.rsi:.1f}\n"
-        f"• Obrót na świecy: {analysis.get('turnover', 0):,.2f} PLN\n"
-        f"• Wolumen: {rec.volume:.0f} szt. ({wolumen_status})\n\n"
-        f"💡 STRATEGIA DECYZYJNA:\n"
-        f"{interpretation}"
+        f"--- 🎙️ RAPORT HYBRYDOWY STRUKTURALNY ({t}) ---\n"
+        f"📌 WERDYKT: {final_signal} ({confidence}%)\n\n"
+        f"1. STRUKTURA (M15)\n{str_m15}\n\n"
+        f"📌 2. STRUKTURA (M5)\n{str_m5}\n\n"
+        f"⭐ GŁÓWNY WNIOSEK SYSTEMOWY TERAZ\n{wniosek}\n\n"
+        f"⭐ LOGICZNE TP WG SYSTEMU (czysto techniczne)\n"
+        f"| TP  | Poziom   | Logika |\n"
+        f"|-----|----------|--------|\n"
+        f"| TP1 | {tp1_v}   | powrót do DEMA9 M15 + opór intraday |\n"
+        f"| TP2 | {tp2_v}   | pełny zasięg impulsu M15/H1 |\n"
+        f"| TP3 | {tp3_v}   | rozszerzenie impulsu, jeśli momentum wróci |\n\n"
+        f"Struktura = wzrostowa | Korekta = normalna, nieagresywna | Momentum = nie zgasło"
     )
 
     data = temp.copy()
@@ -386,7 +383,6 @@ def voice_parse(rec: VoiceRecord):
         "comment": comment,
     })
 
-    m15_h = memory[t].get("M15", {}).get("history", [])
     if m15_h and final_signal != "BRAK PŁYNNOŚCI":
         ref = m15_h[-1]
         rng = ref["high"] - ref["low"]
@@ -396,7 +392,6 @@ def voice_parse(rec: VoiceRecord):
     memory[t][tf]["last_data"] = data
     return data
 
-
 @app.post("/voice-parse/delete")
 def voice_delete(req: DeleteReq):
     t_upper = req.ticker.upper().strip()
@@ -404,15 +399,10 @@ def voice_delete(req: DeleteReq):
         del memory[t_upper]
     return {"deleted": True, "ticker": t_upper}
 
-
 @app.get("/memory")
 def memory_view():
     return memory
 
-
 @app.get("/")
 def root():
-    return {
-        "name": "VOICE XTB 8.2 WEIGHTED HYBRID - GPW LONG",
-        "status": "ONLINE"
-    }
+    return {"name": "VOICE XTB 8.2 STRUCTURAL HYBRID", "status": "ONLINE"}
