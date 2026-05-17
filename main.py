@@ -1,10 +1,14 @@
 from datetime import datetime
 from typing import Dict, List, Optional
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="VOICE XTB 8.1 HYBRID", version="8.1")
+app = FastAPI(
+    title="VOICE XTB 8.1 HYBRID",
+    version="8.2 AGGRESSIVE HYBRID"
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -15,20 +19,35 @@ app.add_middleware(
 )
 
 memory: Dict[str, Dict] = {}
-HISTORY_LIMITS = {"M5": 14, "M15": 7, "H1": 3, "D1": 4}
+
+# =========================================================
+# AGRESYWNIEJSZE LIMITY HISTORII
+# =========================================================
+
+HISTORY_LIMITS = {
+    "M5": 18,
+    "M15": 10,
+    "H1": 5,
+    "D1": 5,
+}
+
+# =========================================================
+# OBNIŻONE PROGI PŁYNNOŚCI
+# 60-65% agresywny / 35-40% konserwatywny
+# =========================================================
 
 TURNOVER_LIMITS = {
-    "M5": 50000.0,
-    "M15": 150000.0,
-    "H1": 400000.0,
-    "D1": 1000000.0,
+    "M5": 25000.0,
+    "M15": 90000.0,
+    "H1": 250000.0,
+    "D1": 700000.0,
 }
 
 TREND_PL = {
     "UP": "WZROSTOWY",
     "DOWN": "SPADKOWY",
     "NEUTRAL": "BOCZNY (NEUTRALNY)",
-    "UNKNOWN": "NIEZNANY"
+    "UNKNOWN": "NIEZNANY",
 }
 
 MARKET_STATE_PL = {
@@ -37,7 +56,7 @@ MARKET_STATE_PL = {
     "BREAKOUT": "WYBICIE",
     "CHAOS": "CHAOS / WYSOKA ZMIENNOŚĆ",
     "ILLIQUID": "NISKA PŁYNNOŚĆ",
-    "UNKNOWN": "BRAK DANYCH"
+    "UNKNOWN": "BRAK DANYCH",
 }
 
 
@@ -45,14 +64,17 @@ class VoiceRecord(BaseModel):
     ticker: str = Field(..., min_length=1)
     interval: str
     time: Optional[str] = None
+
     open: float
     low: float
     high: float
     close: float
+
     volume: float
     ma20: float
     dema9: float
     rsi: float
+
     entry: Optional[float] = None
 
 
@@ -64,43 +86,79 @@ def avg(values):
     return sum(values) / len(values) if values else 0
 
 
+# =========================================================
+# TREND
+# =========================================================
+
 def trend_direction(history: List[Dict]) -> str:
     if len(history) < 3:
         return "NEUTRAL"
+
     closes = [x["close"] for x in history[-3:]]
     dema = [x["dema9"] for x in history[-3:]]
+
     c_slope = closes[-1] - closes[0]
     d_slope = dema[-1] - dema[0]
+
     if c_slope > 0 and d_slope > 0:
         return "UP"
+
     if c_slope < 0 and d_slope < 0:
         return "DOWN"
+
     return "NEUTRAL"
 
+
+# =========================================================
+# STAN RYNKU
+# =========================================================
 
 def detect_market_state(rec: VoiceRecord, history: List[Dict]) -> str:
     if not history:
         return "UNKNOWN"
+
     c_range = rec.high - rec.low
-    avg_range = avg([abs(x["high"] - x["low"]) for x in history[-3:]])
+
+    avg_range = avg([
+        abs(x["high"] - x["low"])
+        for x in history[-3:]
+    ])
+
     if avg_range == 0:
         return "RANGE"
+
     vol_ratio = c_range / avg_range
-    
-    if vol_ratio > 2.5:
+
+    # bardziej agresywny breakout
+    if vol_ratio > 2.8:
         return "CHAOS"
-    if vol_ratio > 1.8:
+
+    if vol_ratio > 1.55:
         return "BREAKOUT"
-        
-    if abs(rec.dema9 - rec.ma20) < (avg_range * 0.15):
+
+    # luźniejszy range
+    if abs(rec.dema9 - rec.ma20) < (avg_range * 0.12):
         return "RANGE"
+
     return "TREND" if trend_direction(history) != "NEUTRAL" else "RANGE"
 
 
+# =========================================================
+# GŁÓWNA ANALIZA
+# =========================================================
+
 def calc_confidence(rec: VoiceRecord, history: List[Dict]) -> Dict:
-    # Bezpieczne wyliczenie obrotu: cena * wolumen
+
     turnover = float(rec.close * rec.volume)
-    min_required_turnover = TURNOVER_LIMITS.get(rec.interval.upper(), 50000.0)
+
+    min_required_turnover = TURNOVER_LIMITS.get(
+        rec.interval.upper(),
+        25000.0
+    )
+
+    # =====================================================
+    # BLOKADA PŁYNNOŚCI
+    # =====================================================
 
     if turnover < min_required_turnover:
         return {
@@ -113,51 +171,122 @@ def calc_confidence(rec: VoiceRecord, history: List[Dict]) -> Dict:
         }
 
     score = 0
+
     trend = trend_direction(history)
+
     market_state = detect_market_state(rec, history)
-    
+
     rsi_delta = rec.rsi - history[-1]["rsi"] if history else 0
-    
-    avg_vol = avg([x.get("volume", 0) for x in history[-3:]])
+
+    avg_vol = avg([
+        x.get("volume", 0)
+        for x in history[-3:]
+    ])
+
     vol_spike = rec.volume / avg_vol if avg_vol > 0 else 1.0
-    
-    strength = (abs(rec.close - rec.open) / (rec.high - rec.low)) if (rec.high - rec.low) > 0 else 0
+
+    candle_range = rec.high - rec.low
+
+    strength = (
+        abs(rec.close - rec.open) / candle_range
+        if candle_range > 0 else 0
+    )
+
+    # =====================================================
+    # AGRESYWNIEJSZY SCORING
+    # =====================================================
 
     if trend == "UP" and rec.close > rec.dema9:
-        score += 25
+        score += 28
+
     if trend == "DOWN" and rec.close < rec.dema9:
-        score += 25
-    if (rec.dema9 > rec.ma20 and trend == "UP") or (
+        score += 28
+
+    if (
+        rec.dema9 > rec.ma20 and trend == "UP"
+    ) or (
         rec.dema9 < rec.ma20 and trend == "DOWN"
     ):
-        score += 10
-    if (trend == "UP" and rsi_delta > 0) or (trend == "DOWN" and rsi_delta < 0):
-        score += 20
-    if vol_spike > 1.05:
-        score += 15
-    if strength > 0.45:
-        score += 15
+        score += 12
+
+    if (
+        trend == "UP" and rsi_delta > 0
+    ) or (
+        trend == "DOWN" and rsi_delta < 0
+    ):
+        score += 22
+
+    # =====================================================
+    # ŁATWIEJSZY VOLUME SPIKE
+    # =====================================================
+
+    if vol_spike > 1.02:
+        score += 18
+
+    # =====================================================
+    # MOC ŚWIECY
+    # =====================================================
+
+    if strength > 0.38:
+        score += 18
+
+    # =====================================================
+    # BREAKOUT BONUS
+    # =====================================================
+
     if market_state == "BREAKOUT":
-        score += 10
+        score += 14
+
+    # =====================================================
+    # CHAOS REDUKCJA
+    # =====================================================
+
     if market_state == "CHAOS":
-        score -= 25
+        score -= 18
+
+    # =====================================================
+    # RANGE DELIKATNIE MINUS
+    # =====================================================
+
     if market_state == "RANGE":
-        score -= 2
+        score -= 1
+
+    # =====================================================
+    # RSI BOOST
+    # =====================================================
+
+    if trend == "UP" and rec.rsi > 57:
+        score += 8
+
+    if trend == "DOWN" and rec.rsi < 43:
+        score += 8
+
+    # =====================================================
+    # FINAL SIGNAL
+    # =====================================================
 
     signal = "CZEKAJ"
+
     if trend == "UP":
-        if score >= 70:
+
+        if score >= 68:
             signal = "BUY PREMIUM"
-        elif score >= 52:
+
+        elif score >= 48:
             signal = "BUY AGRESYWNY"
-        elif score >= 40:
+
+        elif score >= 36:
             signal = "PRAWIE BUY"
+
     elif trend == "DOWN":
-        if score >= 70:
+
+        if score >= 68:
             signal = "EXIT PREMIUM"
-        elif score >= 52:
+
+        elif score >= 48:
             signal = "REDUKUJ"
-        elif score >= 40:
+
+        elif score >= 36:
             signal = "TREND SŁABNIE"
 
     return {
@@ -170,36 +299,56 @@ def calc_confidence(rec: VoiceRecord, history: List[Dict]) -> Dict:
     }
 
 
-def get_final_consensus(ticker: str, current_tf: str, current_signal: str, current_conf: int):
+# =========================================================
+# KONSENSUS TF
+# =========================================================
+
+def get_final_consensus(
+    ticker: str,
+    current_tf: str,
+    current_signal: str,
+    current_conf: int
+):
+
     t_data = memory.get(ticker, {})
+
     m5 = t_data.get("M5", {}).get("history", [])
     m15 = t_data.get("M15", {}).get("history", [])
     h1 = t_data.get("H1", {}).get("history", [])
     d1 = t_data.get("D1", {}).get("history", [])
 
-    # FIX LOGICZNY: Jeśli aktualnie przetwarzany interwał wykrył brak płynności, nie szukamy konsensusu
     if current_signal == "BRAK PŁYNNOŚCI":
-        return {"signal": "BRAK PŁYNNOŚCI", "confidence": 0}
+        return {
+            "signal": "BRAK PŁYNNOŚCI",
+            "confidence": 0
+        }
 
-    # Pobieramy bazowy sygnał z M5 lub z aktualnego interwału, jeśli M5 jest puste
     if not m5:
-        return {"signal": current_signal, "confidence": current_conf}
+        return {
+            "signal": current_signal,
+            "confidence": current_conf
+        }
 
     last_m5 = m5[-1]
-    s5, c5 = last_m5.get("signal", "CZEKAJ"), last_m5.get("confidence", 0)
 
-    # Ignorujemy błędy płynności z historii M5, jeśli aktualna świeca innego TF jest prawidłowa
+    s5 = last_m5.get("signal", "CZEKAJ")
+    c5 = last_m5.get("confidence", 0)
+
     if s5 == "BRAK PŁYNNOŚCI" and current_tf != "M5":
-        s5, c5 = current_signal, current_conf
+        s5 = current_signal
+        c5 = current_conf
 
     d1_trend = "NEUTRAL"
+
     if d1:
         d1_rec = d1[-1]
+
         if (
             d1_rec.get("close", 0) > d1_rec.get("ma20", 0)
             and d1_rec.get("close", 0) > d1_rec.get("dema9", 0)
         ):
             d1_trend = "UP"
+
         elif (
             d1_rec.get("close", 0) < d1_rec.get("ma20", 0)
             and d1_rec.get("close", 0) < d1_rec.get("dema9", 0)
@@ -207,165 +356,140 @@ def get_final_consensus(ticker: str, current_tf: str, current_signal: str, curre
             d1_trend = "DOWN"
 
     h1_trend = "NEUTRAL"
+
     if h1:
         h1_rec = h1[-1]
+
         if (
             h1_rec.get("close", 0) > h1_rec.get("ma20", 0)
             and h1_rec.get("close", 0) > h1_rec.get("dema9", 0)
         ):
             h1_trend = "UP"
+
         elif (
             h1_rec.get("close", 0) < h1_rec.get("ma20", 0)
             and h1_rec.get("close", 0) < h1_rec.get("dema9", 0)
         ):
             h1_trend = "DOWN"
 
-    if not m15:
-        if h1_trend == "UP" and "BUY" in s5:
-            return {"signal": "M5 BUY (ZGODNY Z H1 WCH)", "confidence": c5}
-        if h1_trend == "DOWN" and s5 in ["EXIT PREMIUM", "REDUKUJ"]:
-            return {"signal": f"M5 {s5} (ZGODNY Z H1)", "confidence": c5}
-        return {"signal": s5, "confidence": c5}
-
-    last_m15 = m15[-1]
-    s15, c15 = last_m15.get("signal", "CZEKAJ"), last_m15.get("confidence", 0)
-
-    if s15 == "BRAK PŁYNNOŚCI" and current_tf != "M15":
-        s15, c15 = current_signal, current_conf
-
-    m15_close = last_m15.get("close", 0)
-    m15_open = last_m15.get("open", 0)
-    m15_high = last_m15.get("high", 0)
-    m15_low = last_m15.get("low", 0)
-
-    candle_body = abs(m15_close - m15_open)
-    upper_shadow = m15_high - max(m15_open, m15_close)
-    lower_shadow = min(m15_open, m15_close) - m15_low
-
-    body_ref = max(candle_body, 0.01)
-    is_upper_rejection = upper_shadow > (body_ref * 1.5)
-    is_lower_rejection = lower_shadow > (body_ref * 1.5)
+    # =====================================================
+    # AGRESYWNIEJSZY MULTI TF
+    # =====================================================
 
     if d1_trend == "UP" and h1_trend == "UP":
-        if "BUY" in s5 and not is_upper_rejection:
+
+        if "BUY" in s5:
             return {
                 "signal": "BUY PREMIUM",
-                "confidence": min(100, round((c5 + c15) / 2) + 10),
-            }
-        elif is_lower_rejection or m15_close < last_m15.get("dema9", 0):
-            return {
-                "signal": "BUY ON DIP",
-                "confidence": max(0, round((c5 + c15) / 2) - 5),
+                "confidence": min(100, c5 + 12)
             }
 
-    elif d1_trend == "DOWN" and h1_trend == "DOWN":
-        if s5 in ["EXIT PREMIUM", "REDUKUJ"] and not is_lower_rejection:
+    if d1_trend == "DOWN" and h1_trend == "DOWN":
+
+        if s5 in ["EXIT PREMIUM", "REDUKUJ"]:
             return {
                 "signal": "EXIT PREMIUM",
-                "confidence": min(100, round((c5 + c15) / 2) + 10),
-            }
-        elif is_upper_rejection:
-            return {
-                "signal": "REALIZUJ",
-                "confidence": max(0, round((c5 + c15) / 2) - 5),
+                "confidence": min(100, c5 + 12)
             }
 
-    elif d1_trend == "DOWN" and h1_trend == "UP":
-        if "BUY" in s5 and is_upper_rejection:
-            return {"signal": "REALIZUJ (OPÓR D1)", "confidence": 15}
-        elif "BUY" in s5:
-            return {
-                "signal": "BUY KONTRA",
-                "confidence": max(10, round((c5 + c15) / 2) - 15),
-            }
+    if "BUY" in s5:
+        return {
+            "signal": s5,
+            "confidence": c5
+        }
 
-    elif d1_trend == "UP" and h1_trend == "DOWN":
-        if s5 in ["EXIT PREMIUM", "REDUKUJ"] and is_lower_rejection:
-            return {"signal": "CZEKAJ (WSPARCIE D1)", "confidence": 20}
-        elif s5 in ["EXIT PREMIUM", "REDUKUJ"]:
-            return {
-                "signal": "REDUKUJ KONTRA",
-                "confidence": max(10, round((c5 + c15) / 2) - 15),
-            }
-
-    if "BUY" in s5 and "BUY" in s15:
-        return {"signal": "BUY STRONG", "confidence": round((c5 + c15) / 2)}
-    if s5 in ["EXIT PREMIUM", "REDUKUJ"] and s15 in ["EXIT PREMIUM", "REDUKUJ"]:
-        return {"signal": "EXIT STRONG", "confidence": round((c5 + c15) / 2)}
-
-    if len(m5) >= 2:
-        if (
-            m5[-1]["close"] > m5[-1]["open"]
-            and m5[-2]["close"] > m5[-2]["open"]
-            and c5 >= 52
-        ):
-            return {"signal": "BUY ACCEL", "confidence": c5}
-        if (
-            m5[-1]["close"] < m5[-1]["open"]
-            and m5[-2]["close"] < m5[-2]["open"]
-            and c5 >= 52
-        ):
-            return {"signal": "REDUKUJ ACCEL", "confidence": c5}
+    if s5 in ["EXIT PREMIUM", "REDUKUJ"]:
+        return {
+            "signal": s5,
+            "confidence": c5
+        }
 
     return {
-        "signal": (
-            "REALIZUJ (KONFLIKT)"
-            if (
-                ("BUY" in s5 and s15 in ["EXIT PREMIUM", "REDUKUJ"])
-                or (s5 in ["EXIT PREMIUM", "REDUKUJ"] and "BUY" in s15)
-            )
-            else s15
-        ),
-        "confidence": c15,
+        "signal": current_signal,
+        "confidence": current_conf
     }
 
 
+# =========================================================
+# TP
+# =========================================================
+
 def generate_tp(signal, conf, ref_close, rng):
+
     if signal == "BRAK PŁYNNOŚCI":
         return {}
-    mult = 1.4 if conf >= 80 else 1.1 if conf >= 65 else 0.8
+
+    mult = (
+        1.5 if conf >= 80
+        else 1.2 if conf >= 65
+        else 0.9
+    )
+
     if "BUY" in signal or "STRONG" in signal:
         return {
             "tp1": round(ref_close + rng * 0.55 * mult, 2),
             "tp2": round(ref_close + rng * 1.1 * mult, 2),
-            "tp3": round(ref_close + rng * 1.6 * mult, 2),
+            "tp3": round(ref_close + rng * 1.7 * mult, 2),
         }
-    if any(keyword in signal for keyword in ["EXIT", "REDUKUJ", "SŁABNIE", "REALIZUJ"]):
+
+    if any(
+        keyword in signal
+        for keyword in [
+            "EXIT",
+            "REDUKUJ",
+            "SŁABNIE",
+            "REALIZUJ"
+        ]
+    ):
         return {
             "tp1": round(ref_close - rng * 0.55 * mult, 2),
             "tp2": round(ref_close - rng * 1.1 * mult, 2),
-            "tp3": round(ref_close - rng * 1.6 * mult, 2),
+            "tp3": round(ref_close - rng * 1.7 * mult, 2),
         }
+
     return {}
 
 
 def safe_time_sort(time_str: str) -> str:
     if "-" in time_str:
         return time_str
+
     return f"0000-00-00 {time_str}"
 
 
+# =========================================================
+# MAIN API
+# =========================================================
+
 @app.post("/voice-parse")
 def voice_parse(rec: VoiceRecord):
+
     if not rec.time:
         rec.time = datetime.now().strftime("%H:%M")
-    t, tf = rec.ticker.upper().strip(), rec.interval.upper()
-    
+
+    t = rec.ticker.upper().strip()
+    tf = rec.interval.upper()
+
     if t not in memory:
         memory[t] = {
             "global_entry": "",
             "M5": {"history": [], "last_data": {}},
             "M15": {"history": [], "last_data": {}},
             "H1": {"history": [], "last_data": {}},
-            "D1": {"history": [], "last_data": {}}
+            "D1": {"history": [], "last_data": {}},
         }
-        
+
     if tf not in memory[t]:
-        memory[t][tf] = {"history": [], "last_data": {}}
+        memory[t][tf] = {
+            "history": [],
+            "last_data": {}
+        }
 
     if rec.entry is not None:
+
         if rec.entry <= 0:
             memory[t]["global_entry"] = ""
+
         else:
             memory[t]["global_entry"] = str(rec.entry)
 
@@ -382,105 +506,203 @@ def voice_parse(rec: VoiceRecord):
         "dema9": rec.dema9,
         "rsi": rec.rsi,
     }
-    
-    analysis = calc_confidence(rec, memory[t][tf]["history"])
+
+    analysis = calc_confidence(
+        rec,
+        memory[t][tf]["history"]
+    )
+
     temp.update(analysis)
-    
+
     history_list = memory[t][tf]["history"]
-    existing_index = next((i for i, item in enumerate(history_list) if item["time"] == rec.time), None)
-    
+
+    existing_index = next(
+        (
+            i for i, item in enumerate(history_list)
+            if item["time"] == rec.time
+        ),
+        None
+    )
+
     if existing_index is not None:
         history_list[existing_index] = temp
     else:
         history_list.append(temp)
-        
-    history_list.sort(key=lambda x: safe_time_sort(x["time"]))
-        
+
+    history_list.sort(
+        key=lambda x: safe_time_sort(x["time"])
+    )
+
     if len(history_list) > HISTORY_LIMITS.get(tf, 5):
         history_list.pop(0)
-    
-    # FIX: Przekazujemy aktualne dane analizy do konsensusu, aby uniknąć nadpisywania zaszłościami
-    consensus = get_final_consensus(t, tf, analysis["signal"], analysis["confidence"])
+
+    consensus = get_final_consensus(
+        t,
+        tf,
+        analysis["signal"],
+        analysis["confidence"]
+    )
+
     final_signal = consensus["signal"]
     confidence = consensus["confidence"]
 
     interpretation = "STÓJ Z BOKU. Rynek szuka kierunku."
-    
-    # FIX LOGICZNY RAPORTU: Warunek sprawdza teraz faktyczny stan bieżącej analizy, a nie narzucony konsensus
-    if analysis["signal"] == "BRAK PŁYNNOŚCI" or final_signal == "BRAK PŁYNNOŚCI":
+
+    # =====================================================
+    # INTERPRETACJA
+    # =====================================================
+
+    if (
+        analysis["signal"] == "BRAK PŁYNNOŚCI"
+        or final_signal == "BRAK PŁYNNOŚCI"
+    ):
+
         final_signal = "BRAK PŁYNNOŚCI"
         confidence = 0
-        min_required = TURNOVER_LIMITS.get(tf, 50000.0)
-        interpretation = f"BRAK PŁYNNOŚCI! Obrót ({analysis['turnover']:,.2f} PLN) poniżej wymaganego limitu {min_required:,.2f} PLN dla {tf}. Analiza zawieszona."
-    elif confidence >= 75:
-        if "BUY" in final_signal:
-            interpretation = "MOCNY SYGNAŁ! Wszystkie warunki spełnione. Można wchodzić w pozycję długą."
-        else:
-            interpretation = "KRYTYCZNY SYGNAŁ DECYZYJNY! Maksymalne ryzyko dla pozycji Long. Zabezpiecz kapitał."
-    elif confidence >= 52:
-        if "BUY" in final_signal:
-            interpretation = "DOBRY MOMENT dla pozycji Long, ale pilnuj trendu. Możliwa szybka akcja."
-        else:
-            interpretation = "WZRASTAJĄCA SŁABOŚĆ RYNKU. Rozważ częściowe zamknięcie lub zacieśnienie Stop Loss."
-    elif "KONFLIKT" in final_signal or "REALIZUJ" in final_signal:
-        interpretation = "NIESTABILNOŚĆ! Walka popytu z podażą na interwałach. Dobry moment na realizację zysków."
 
-    trend_pl = TREND_PL.get(analysis['trend'], analysis['trend'])
-    market_state_pl = MARKET_STATE_PL.get(analysis['market_state'], analysis['market_state'])
-    wolumen_status = "Prawidłowy" if final_signal != "BRAK PŁYNNOŚCI" else "ZA NISKI OBRÓT"
+        min_required = TURNOVER_LIMITS.get(tf, 25000.0)
+
+        interpretation = (
+            f"BRAK PŁYNNOŚCI! "
+            f"Obrót ({analysis['turnover']:,.2f} PLN) "
+            f"poniżej limitu {min_required:,.2f} PLN."
+        )
+
+    elif confidence >= 75:
+
+        if "BUY" in final_signal:
+            interpretation = (
+                "MOCNY IMPULS WZROSTOWY. "
+                "Układ agresywnego wejścia aktywny."
+            )
+
+        else:
+            interpretation = (
+                "SILNA PRESJA PODAŻY. "
+                "Wysokie ryzyko dalszego spadku."
+            )
+
+    elif confidence >= 48:
+
+        if "BUY" in final_signal:
+            interpretation = (
+                "RYNEK NABIERA MOMENTUM. "
+                "Możliwe szybkie wybicie."
+            )
+
+        else:
+            interpretation = (
+                "RYNEK SŁABNIE. "
+                "Możliwa dalsza redukcja."
+            )
+
+    elif "KONFLIKT" in final_signal or "REALIZUJ" in final_signal:
+
+        interpretation = (
+            "KONFLIKT INTERWAŁÓW. "
+            "Rozważ zabezpieczenie pozycji."
+        )
+
+    trend_pl = TREND_PL.get(
+        analysis["trend"],
+        analysis["trend"]
+    )
+
+    market_state_pl = MARKET_STATE_PL.get(
+        analysis["market_state"],
+        analysis["market_state"]
+    )
+
+    wolumen_status = (
+        "Prawidłowy"
+        if final_signal != "BRAK PŁYNNOŚCI"
+        else "ZA NISKI OBRÓT"
+    )
 
     comment = (
-        f"--- 🎙️ RAPORT 8.1 HYBRID (DOJI CORRECTION) ---\n\n"
+        f"--- 🎙️ RAPORT 8.2 AGGRESSIVE HYBRID ---\n\n"
         f"📌 WERDYKT: {final_signal}\n"
-        f"🔥 PEWNOŚĆ: {confidence}% "
-        f"({'Wysoka' if confidence >= 70 else 'Średnia' if confidence >= 52 else 'Niska'})\n\n"
-        f"📈 ANALIZA TECHNICZNA:\n"
+        f"🔥 PEWNOŚĆ: {confidence}%\n\n"
+        f"📈 ANALIZA:\n"
         f"• Trend: {trend_pl}\n"
-        f"• Stan: {market_state_pl}\n"
+        f"• Stan rynku: {market_state_pl}\n"
         f"• RSI: {rec.rsi:.1f}\n"
-        f"• Obrót świecy: {analysis.get('turnover', 0):,.2f} PLN\n"
-        f"• Wolumen: {rec.volume:.0f} szt. ({wolumen_status})\n\n"
-        f"💡 CO ROBIĆ:\n{interpretation}"
+        f"• Obrót: {analysis.get('turnover', 0):,.2f} PLN\n"
+        f"• Wolumen: {rec.volume:.0f} ({wolumen_status})\n\n"
+        f"💡 INTERPRETACJA:\n"
+        f"{interpretation}"
     )
 
     data = temp.copy()
-    data.update(
-        {
-            "signal": final_signal,
-            "confidence": confidence,
-            "entry": memory[t]["global_entry"],
-            "comment": comment,
-        }
-    )
+
+    data.update({
+        "signal": final_signal,
+        "confidence": confidence,
+        "entry": memory[t]["global_entry"],
+        "comment": comment,
+    })
 
     m15_h = memory[t].get("M15", {}).get("history", [])
+
     if m15_h and final_signal != "BRAK PŁYNNOŚCI":
+
         ref = m15_h[-1]
+
         rng = ref["high"] - ref["low"]
+
         data["widelki"] = (
-            f"{ref['low'] + rng*0.18:.2f} - {ref['low'] + rng*0.32:.2f}"
+            f"{ref['low'] + rng*0.16:.2f} - "
+            f"{ref['low'] + rng*0.36:.2f}"
         )
+
         data.update(
-            generate_tp(data["signal"], data["confidence"], ref["close"], rng)
+            generate_tp(
+                data["signal"],
+                data["confidence"],
+                ref["close"],
+                rng
+            )
         )
 
     memory[t][tf]["last_data"] = data
+
     return data
 
 
+# =========================================================
+# DELETE
+# =========================================================
+
 @app.post("/voice-parse/delete")
 def voice_delete(req: DeleteReq):
+
     t_upper = req.ticker.upper().strip()
+
     if t_upper in memory:
         del memory[t_upper]
-    return {"deleted": True, "ticker": t_upper}
 
+    return {
+        "deleted": True,
+        "ticker": t_upper
+    }
+
+
+# =========================================================
+# MEMORY
+# =========================================================
 
 @app.get("/memory")
 def memory_view():
     return memory
 
 
+# =========================================================
+# ROOT
+# =========================================================
+
 @app.get("/")
 def root():
-    return {"name": "VOICE XTB 8.1 HYBRID", "status": "ONLINE"}
+    return {
+        "name": "VOICE XTB 8.2 AGGRESSIVE HYBRID",
+        "status": "ONLINE"
+    }
