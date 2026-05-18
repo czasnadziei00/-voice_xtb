@@ -17,16 +17,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Globalna bezpieczna pamięć sesyjna
 memory: Dict[str, Dict] = {}
 
-# =========================================================
-# CONFIG - ZOPTYMALIZOWANE POD DUŻE SPÓŁKI GPW (WIG20)
-# =========================================================
 HISTORY_LIMITS = {
-    "M5": 12,   # Max 1 godzina wstecz (świeży impuls)
-    "M15": 8,   # Max 2 godziny wstecz (aktualna struktura)
-    "H1": 5,    # Max pół sesji GPW (świeży trend intraday)
-    "D1": 4,    # Wystarczy do matematyki porównawczej zmienności
+    "M5": 12,
+    "M15": 8,
+    "H1": 5,
+    "D1": 4,
 }
 
 class VoiceRecord(BaseModel):
@@ -50,6 +48,8 @@ def avg(values):
     return sum(values) / len(values) if values else 0
 
 def safe_time_sort(time_str: str):
+    if not time_str:
+        return "0000-00-00 00:00"
     if "-" in time_str:
         return time_str
     return f"0000-00-00 {time_str}"
@@ -62,7 +62,7 @@ def get_trend_state(rec: VoiceRecord):
     return "RANGE"
 
 def detect_market_state(rec: VoiceRecord, history: List[Dict]):
-    if not history:
+    if not history or len(history) < 2:
         return "NEUTRAL"
     candle_range = rec.high - rec.low
     avg_range = avg([abs(x["high"] - x["low"]) for x in history[-3:]])
@@ -89,13 +89,13 @@ def detect_setup(rec: VoiceRecord):
 def detect_trigger(rec: VoiceRecord, history: List[Dict]):
     if not history or len(history) < 2:
         return "NO_TRIGGER"
-    prev = history[-2] if history[-1]["time"] == rec.time else history[-1]
+    prev = history[-2] if history[-1].get("time") == rec.time else history[-1]
     bullish_candle = rec.close > rec.open
-    rsi_up = rec.rsi > prev["rsi"]
-    volume_up = rec.volume > prev["volume"]
+    rsi_up = rec.rsi > prev.get("rsi", 50)
+    volume_up = rec.volume > prev.get("volume", 0)
     if bullish_candle and rsi_up and volume_up and rec.close > rec.dema9:
         return "ENTRY_TRIGGER"
-    if rec.close < rec.dema9 and rec.rsi < prev["rsi"]:
+    if rec.close < rec.dema9 and rec.rsi < prev.get("rsi", 50):
         return "WEAK_MOMENTUM"
     return "NO_TRIGGER"
 
@@ -130,15 +130,11 @@ def generate_dynamic_tp(signal, conf, close_price, setup_m15, h1_data, d1_data):
         return {}
 
     volatility_step = close_price * 0.018
-
     trend_multiplier = 1.0
-    if d1_data.get("trend") == "LONG":
-        trend_multiplier += 0.4
-    if h1_data.get("trend") == "LONG":
-        trend_multiplier += 0.2
-
-    if setup_m15 == "BREAKOUT" and conf >= 75:
-        trend_multiplier *= 1.5
+    
+    if d1_data.get("trend") == "LONG": trend_multiplier += 0.4
+    if h1_data.get("trend") == "LONG": trend_multiplier += 0.2
+    if setup_m15 == "BREAKOUT" and conf >= 75: trend_multiplier *= 1.5
 
     tp1 = close_price + (volatility_step * 0.6 * trend_multiplier)
     tp2 = close_price + (volatility_step * 1.3 * trend_multiplier)
@@ -156,7 +152,7 @@ def generate_dynamic_tp(signal, conf, close_price, setup_m15, h1_data, d1_data):
     }
 
 @app.post("/voice-parse")
-def voice_parse(rec: VoiceRecord):
+async def voice_parse(rec: VoiceRecord):
     if not rec.time:
         rec.time = datetime.now().strftime("%H:%M")
 
@@ -205,24 +201,25 @@ def voice_parse(rec: VoiceRecord):
         "market_state": market_state
     }
 
-    d1_data = memory[t]["D1"]["last_data"]
-    h1_data = memory[t]["H1"]["last_data"]
-    m15_data = memory[t]["M15"]["last_data"]
-    m5_data = memory[t]["M5"]["last_data"]
+    d1_data = memory[t]["D1"].get("last_data", {})
+    h1_data = memory[t]["H1"].get("last_data", {})
+    m15_data = memory[t]["M15"].get("last_data", {})
+    m5_data = memory[t]["M5"].get("last_data", {})
 
     trend_d1 = d1_data.get("trend", "RANGE")
     trend_h1 = h1_data.get("trend", "RANGE")
 
-    # ZABEZPIECZENIE PRZED NADMIAROWYMI KLUCZAMI W PYDANTIC
     setup_m15 = "NONE"
     if m15_data:
-        filtered_m15 = {k: v for k, v in m15_data.items() if k in VoiceRecord.model_fields}
-        setup_m15 = detect_setup(VoiceRecord(**filtered_m15))
+        filtered_m15 = {k: v for k, v in m15_data.items() if k in VoiceRecord.model_fields and v != ""}
+        try: setup_m15 = detect_setup(VoiceRecord(**filtered_m15))
+        except: pass
 
     trigger_m5 = "NO_TRIGGER"
     if m5_data:
-        filtered_m5 = {k: v for k, v in m5_data.items() if k in VoiceRecord.model_fields}
-        trigger_m5 = detect_trigger(VoiceRecord(**filtered_m5), memory[t]["M5"]["history"])
+        filtered_m5 = {k: v for k, v in m5_data.items() if k in VoiceRecord.model_fields and v != ""}
+        try: trigger_m5 = detect_trigger(VoiceRecord(**filtered_m5), memory[t]["M5"]["history"])
+        except: pass
 
     final = build_final_signal(trend_d1, trend_h1, setup_m15, trigger_m5)
     final_signal = final["signal"]
@@ -280,22 +277,22 @@ def voice_parse(rec: VoiceRecord):
     }
 
     if m15_data:
-        rng = m15_data["high"] - m15_data["low"]
-        response_data["widelki"] = f"{m15_data['low'] + rng*0.16:.2f} - {m15_data['low'] + rng*0.36:.2f}"
+        rng = m15_data.get("high", 0) - m15_data.get("low", 0)
+        response_data["widelki"] = f"{m15_data.get('low', 0) + rng*0.16:.2f} - {m15_data.get('low', 0) + rng*0.36:.2f}"
 
     return response_data
 
 @app.post("/voice-parse/delete")
-def voice_delete(req: DeleteReq):
+async def voice_delete(req: DeleteReq):
     t_upper = req.ticker.upper().strip()
     if t_upper in memory:
         del memory[t_upper]
     return {"deleted": True, "ticker": t_upper}
 
 @app.get("/memory")
-def memory_view():
+async def memory_view():
     return memory
 
 @app.get("/")
-def root():
+async def root():
     return {"name": "VOICE XTB 9.0 STRUCTURE ENGINE", "status": "ONLINE"}
