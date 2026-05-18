@@ -17,7 +17,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Globalna bezpieczna pamięć sesyjna
 memory: Dict[str, Dict] = {}
 
 HISTORY_LIMITS = {
