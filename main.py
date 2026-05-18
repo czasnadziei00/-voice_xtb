@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 app = FastAPI(
     title="VOICE XTB 8.2 GPW LONG PRO",
-    version="8.2.3-STABLE-MULTITF"
+    version="8.2.4-CLEAN-SIGNALS"
 )
 
 app.add_middleware(
@@ -127,7 +127,7 @@ def detect_market_state(rec: VoiceRecord, history: List[Dict]) -> str:
 
 
 # =========================================================
-# CORE SIGNAL ENGINE
+# SIGNAL ENGINE
 # =========================================================
 
 def calc_confidence(rec: VoiceRecord, history: List[Dict]) -> Dict:
@@ -246,7 +246,7 @@ def calc_confidence(rec: VoiceRecord, history: List[Dict]) -> Dict:
     )
 
     # =====================================================
-    # SIGNAL LOGIC
+    # FINAL SIGNALS
     # =====================================================
 
     signal = "CZEKAJ"
@@ -260,11 +260,11 @@ def calc_confidence(rec: VoiceRecord, history: List[Dict]) -> Dict:
     elif score >= 40:
         signal = "HOLD"
 
-    elif trend == "DOWN" or score < 28:
-        signal = "SELL"
-
     elif 28 <= score < 40:
         signal = "REDUKUJ"
+
+    elif trend == "DOWN" or score < 28:
+        signal = "SELL"
 
     return {
         "signal": signal,
@@ -289,25 +289,15 @@ def get_final_consensus(
 
     t_data = memory.get(ticker, {})
 
-    m5 = t_data.get("M5", {}).get("history", [])
     h1 = t_data.get("H1", {}).get("history", [])
     d1 = t_data.get("D1", {}).get("history", [])
 
     if current_signal == "BRAK PŁYNNOŚCI":
+
         return {
             "signal": "BRAK PŁYNNOŚCI",
             "confidence": 0
         }
-
-    if not m5:
-        return {
-            "signal": current_signal,
-            "confidence": current_conf
-        }
-
-    # =====================================================
-    # D1 TREND
-    # =====================================================
 
     d1_trend = "NEUTRAL"
 
@@ -315,21 +305,11 @@ def get_final_consensus(
 
         d1_rec = d1[-1]
 
-        if (
-            d1_rec.get("close", 0) >
-            d1_rec.get("ma20", 0)
-        ):
+        if d1_rec.get("close", 0) > d1_rec.get("ma20", 0):
             d1_trend = "UP"
 
-        elif (
-            d1_rec.get("close", 0) <
-            d1_rec.get("ma20", 0)
-        ):
+        elif d1_rec.get("close", 0) < d1_rec.get("ma20", 0):
             d1_trend = "DOWN"
-
-    # =====================================================
-    # H1 TREND
-    # =====================================================
 
     h1_trend = "NEUTRAL"
 
@@ -337,26 +317,17 @@ def get_final_consensus(
 
         h1_rec = h1[-1]
 
-        if (
-            h1_rec.get("close", 0) >
-            h1_rec.get("ma20", 0)
-        ):
+        if h1_rec.get("close", 0) > h1_rec.get("ma20", 0):
             h1_trend = "UP"
 
-        elif (
-            h1_rec.get("close", 0) <
-            h1_rec.get("ma20", 0)
-        ):
+        elif h1_rec.get("close", 0) < h1_rec.get("ma20", 0):
             h1_trend = "DOWN"
 
     # =====================================================
-    # FINAL FILTER
+    # TREND FILTER
     # =====================================================
 
-    if (
-        d1_trend == "UP" and
-        h1_trend == "UP"
-    ):
+    if d1_trend == "UP" and h1_trend == "UP":
 
         if current_signal == "BUY":
 
@@ -365,23 +336,13 @@ def get_final_consensus(
                 "confidence": min(100, current_conf + 12)
             }
 
-        if current_signal == "HOLD":
-
-            return {
-                "signal": "HOLD",
-                "confidence": current_conf
-            }
-
-    if (
-        d1_trend == "DOWN" or
-        h1_trend == "DOWN"
-    ):
+    if d1_trend == "DOWN" or h1_trend == "DOWN":
 
         if current_signal == "BUY":
 
             return {
                 "signal": "HOLD",
-                "confidence": max(35, current_conf - 20)
+                "confidence": max(35, current_conf - 18)
             }
 
         if current_signal == "HOLD":
@@ -432,7 +393,7 @@ def safe_time_sort(time_str: str) -> str:
 
 
 # =========================================================
-# MAIN ENDPOINT
+# MAIN
 # =========================================================
 
 @app.post("/voice-parse")
@@ -445,7 +406,7 @@ def voice_parse(rec: VoiceRecord):
     tf = rec.interval.upper()
 
     # =====================================================
-    # INIT MEMORY
+    # INIT
     # =====================================================
 
     if t not in memory:
@@ -458,13 +419,6 @@ def voice_parse(rec: VoiceRecord):
             "M15": {"history": [], "last_data": {}},
             "H1": {"history": [], "last_data": {}},
             "D1": {"history": [], "last_data": {}},
-        }
-
-    if tf not in memory[t]:
-
-        memory[t][tf] = {
-            "history": [],
-            "last_data": {}
         }
 
     memory[t]["updated_at"] = datetime.now().timestamp()
@@ -482,7 +436,7 @@ def voice_parse(rec: VoiceRecord):
             memory[t]["global_entry"] = str(rec.entry)
 
     # =====================================================
-    # TEMP RECORD
+    # TEMP
     # =====================================================
 
     temp = {
@@ -514,7 +468,7 @@ def voice_parse(rec: VoiceRecord):
     temp.update(analysis)
 
     # =====================================================
-    # HISTORY UPDATE
+    # HISTORY
     # =====================================================
 
     history_list = memory[t][tf]["history"]
@@ -596,20 +550,73 @@ def voice_parse(rec: VoiceRecord):
         )
 
     # =====================================================
-    # COMMENT
+    # QUICK COMMENT
     # =====================================================
 
+    m15_last = memory[t]["M15"].get("last_data", {})
+    m5_last = memory[t]["M5"].get("last_data", {})
+
+    trend_label = (
+        "WZROSTOWY"
+        if final_signal in ["BUY", "HOLD"]
+        else "SŁABNIE"
+    )
+
+    if final_signal == "BUY":
+
+        quick_text = (
+            "Momentum aktywne. "
+            "Popyt utrzymuje przewagę."
+        )
+
+    elif final_signal == "HOLD":
+
+        quick_text = (
+            "Trend nadal aktywny, "
+            "ale pojawia się schłodzenie."
+        )
+
+    elif final_signal == "REDUKUJ":
+
+        quick_text = (
+            "Popyt słabnie. "
+            "Rośnie ryzyko głębszej korekty."
+        )
+
+    elif final_signal == "SELL":
+
+        quick_text = (
+            "Układ techniczny słaby. "
+            "Przewaga podaży."
+        )
+
+    else:
+
+        quick_text = "Brak wyraźnej przewagi rynku."
+
     comment = (
-        f"--- RAPORT SYSTEMOWY ({t}) ---\n\n"
-        f"SYGNAŁ: {final_signal}\n"
-        f"PEWNOŚĆ: {confidence}%\n\n"
-        f"Trend: {analysis['trend']}\n"
-        f"Market State: {analysis['market_state']}\n"
-        f"Volume Spike: {analysis['vol_spike']:.2f}\n"
-        f"Obrót: {analysis['turnover']:.0f}\n\n"
+        f"🎯 {t} | {final_signal} ({confidence}%)\n\n"
+
+        f"📈 M15\n"
+        f"• Cena: {m15_last.get('close', 0):.2f}\n"
+        f"• DEMA9: {m15_last.get('dema9', 0):.2f}\n"
+        f"• MA20: {m15_last.get('ma20', 0):.2f}\n"
+        f"• RSI: {m15_last.get('rsi', 0):.1f}\n\n"
+
+        f"⚡ M5\n"
+        f"• Cena: {m5_last.get('close', 0):.2f}\n"
+        f"• DEMA9: {m5_last.get('dema9', 0):.2f}\n"
+        f"• RSI: {m5_last.get('rsi', 0):.1f}\n\n"
+
+        f"🧠 WNIOSEK\n"
+        f"{quick_text}\n\n"
+
+        f"🎯 TP\n"
         f"TP1: {tp1_v}\n"
         f"TP2: {tp2_v}\n"
-        f"TP3: {tp3_v}\n"
+        f"TP3: {tp3_v}\n\n"
+
+        f"📌 Trend: {trend_label}"
     )
 
     # =====================================================
@@ -647,7 +654,7 @@ def voice_parse(rec: VoiceRecord):
         )
 
     # =====================================================
-    # SAVE LAST DATA
+    # SAVE
     # =====================================================
 
     memory[t][tf]["last_data"] = data
@@ -690,6 +697,6 @@ def memory_view():
 def root():
 
     return {
-        "name": "VOICE XTB 8.2 STABLE MULTITF",
+        "name": "VOICE XTB 8.2 CLEAN SIGNALS",
         "status": "ONLINE"
     }
