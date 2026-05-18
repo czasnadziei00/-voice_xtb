@@ -19,11 +19,14 @@ app.add_middleware(
 
 memory: Dict[str, Dict] = {}
 
+# =========================================================
+# CONFIG - ZOPTYMALIZOWANE POD DUŻE SPÓŁKI GPW (WIG20)
+# =========================================================
 HISTORY_LIMITS = {
-    "M5": 24,
-    "M15": 16,
-    "H1": 10,
-    "D1": 10,
+    "M5": 12,   # Max 1 godzina wstecz (świeży impuls)
+    "M15": 8,   # Max 2 godziny wstecz (aktualna struktura)
+    "H1": 5,    # Max pół sesji GPW (świeży trend intraday)
+    "D1": 4,    # Wystarczy do matematyki porównawczej zmienności
 }
 
 class VoiceRecord(BaseModel):
@@ -122,25 +125,18 @@ def build_final_signal(trend_d1, trend_h1, setup_m15, trigger_m5):
 
     return {"signal": signal, "confidence": max(0, min(100, confidence))}
 
-# =========================================================
-# NOWA DYNAMICZNA MATEMATYKA WYJŚCIA (TAKE PROFIT / TRAILING)
-# =========================================================
 def generate_dynamic_tp(signal, conf, close_price, setup_m15, h1_data, d1_data):
     if signal not in ["BUY", "HOLD"]:
         return {}
 
-    # Obliczamy bazowy "Krok Zmienności" oparty o szacunek ceny (zamiast małej świeczki M15)
-    # Dla spólki za 32 zł (Allegro) krok to ok 0.60 zł. Dla droższych odpowiednio skalowany (ok. 1.8% ceny)
     volatility_step = close_price * 0.018
 
-    # Współczynnik siły trendu wyższego rzędu
     trend_multiplier = 1.0
     if d1_data.get("trend") == "LONG":
         trend_multiplier += 0.4
     if h1_data.get("trend") == "LONG":
         trend_multiplier += 0.2
 
-    # Jeżeli rynek jest ekstremalnie rozgrzany silnym impulsem, rozszerzamy targety (Nie wysiadaj za wcześnie!)
     if setup_m15 == "BREAKOUT" and conf >= 75:
         trend_multiplier *= 1.5
 
@@ -148,11 +144,8 @@ def generate_dynamic_tp(signal, conf, close_price, setup_m15, h1_data, d1_data):
     tp2 = close_price + (volatility_step * 1.3 * trend_multiplier)
     tp3 = close_price + (volatility_step * 2.2 * trend_multiplier)
 
-    # Dynamiczny Trailing Stop oparty na strukturze logicznej średnich
-    # System podpowiada gdzie uciekać z zyskiem, gdyby nagle zawróciło
     trailing_sl = h1_data.get("dema9") if h1_data.get("dema9") else close_price * 0.985
     if setup_m15 == "OVERHEATED":
-        # Jeśli rynek jest przegrzany, natychmiast podciągamy stop loss pod bliską średnią z M15, aby chronić kasę
         trailing_sl = max(trailing_sl, close_price * 0.993)
 
     return {
@@ -206,7 +199,6 @@ def voice_parse(rec: VoiceRecord):
     trend = get_trend_state(rec)
     market_state = detect_market_state(rec, history)
 
-    # Zapisujemy do pamięci wyłącznie poprawne, oczekiwane przez Pydantic klucze
     memory[t][tf]["last_data"] = {
         **temp,
         "trend": trend,
@@ -221,19 +213,21 @@ def voice_parse(rec: VoiceRecord):
     trend_d1 = d1_data.get("trend", "RANGE")
     trend_h1 = h1_data.get("trend", "RANGE")
 
+    # ZABEZPIECZENIE PRZED NADMIAROWYMI KLUCZAMI W PYDANTIC
     setup_m15 = "NONE"
     if m15_data:
-        setup_m15 = detect_setup(VoiceRecord(**m15_data))
+        filtered_m15 = {k: v for k, v in m15_data.items() if k in VoiceRecord.model_fields}
+        setup_m15 = detect_setup(VoiceRecord(**filtered_m15))
 
     trigger_m5 = "NO_TRIGGER"
     if m5_data:
-        trigger_m5 = detect_trigger(VoiceRecord(**m5_data), memory[t]["M5"]["history"])
+        filtered_m5 = {k: v for k, v in m5_data.items() if k in VoiceRecord.model_fields}
+        trigger_m5 = detect_trigger(VoiceRecord(**filtered_m5), memory[t]["M5"]["history"])
 
     final = build_final_signal(trend_d1, trend_h1, setup_m15, trigger_m5)
     final_signal = final["signal"]
     confidence = final["confidence"]
 
-    # Generowanie ulepszonych, dynamicznych targetów
     ref_price = rec.close
     tp_data = generate_dynamic_tp(final_signal, confidence, ref_price, setup_m15, h1_data, d1_data)
 
@@ -267,7 +261,6 @@ def voice_parse(rec: VoiceRecord):
         f"• Cele wyjścia (TP): TP1: {tp_data.get('tp1', '—')} | TP2: {tp_data.get('tp2', '—')} | TP3: {tp_data.get('tp3', '—')}"
     )
 
-    # Paczka danych dla frontendu
     response_data = {
         **temp,
         "signal": final_signal,
